@@ -1,0 +1,74 @@
+services:
+  django:
+    build: .
+    image: core
+    container_name: django
+    volumes:
+      - .:/app
+      - /etc/localtime:/etc/localtime:ro  # Sync time with host
+      - /etc/timezone:/etc/timezone:ro    # Sync timezone with host
+    ports:
+      - "8000:8000"
+    environment:
+      - DJANGO_SETTINGS_MODULE=doctomed.settings
+      - REDIS_HOST=redis  # Add this environment variable
+    depends_on:
+      - elasticsearch
+      - mysql
+      - redis  # Add Redis dependency
+
+  # Add this Redis service
+  redis:
+    image: redis:alpine
+    container_name: redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 30s
+      retries: 3
+
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.10.1
+    container_name: elasticsearch
+    environment:
+      - discovery.type=single-node
+      - bootstrap.memory_lock=true
+      - xpack.security.enabled=false
+      - "ES_JAVA_OPTS=-Xms512m -Xmx512m"
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+    volumes:
+      - es_data:/usr/share/elasticsearch/data
+    ports:
+      - "9200:9200"
+
+  mysql:
+    image: mysql:8.0
+    container_name: mysql
+    restart: always
+    environment:
+      MYSQL_DATABASE: doctors
+      MYSQL_ROOT_PASSWORD: 12345678
+    volumes:
+      - doctomed_mysql_data:/var/lib/mysql
+    healthcheck:
+      test: [ "CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p12345678" ]
+      interval: 5s
+      timeout: 10s
+      retries: 10
+    ports:
+      - "3306:3306"
+
+volumes:
+  es_data:
+    driver: local
+  doctomed_mysql_data:
+    driver: local
+  redis_data:  # Add Redis volume
+    driver: local
