@@ -17,6 +17,7 @@ RUN pip install --upgrade pip && \
     rm -rf /var/lib/apt/lists/* && \
     pip install -r requirements.txt
 
+RUN python manage.py collecstatic --noinput
 # Copy the rest of the application
 COPY . /app/
 
