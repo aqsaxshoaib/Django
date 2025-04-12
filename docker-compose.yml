@@ -9,15 +9,11 @@ services:
       - /etc/timezone:/etc/timezone:ro    # Sync timezone with host
     ports:
       - "8000:8000"
+    env_file:
+      - .env
     environment:
       - DJANGO_SETTINGS_MODULE=doctomed.settings
-      - REDIS_HOST=redis
-      - SECRET_KEY=django-insecure-97$h@7j=r)0z7c*z9m!fpkbe882swz2moxs8v#t&9e=i_x@y!0
-      - NAME=doctors
-      - USER=root
-      - PASSWORD=12345678
-      - HOST=mysql
-      - CSRF_TRUSTED_ORIGIN=https://yourdomain.com
+      - REDIS_HOST=redis  # Add this environment variable
     depends_on:
       - elasticsearch
       - mysql
@@ -61,7 +57,6 @@ services:
     environment:
       MYSQL_DATABASE: doctors
       MYSQL_ROOT_PASSWORD: 12345678
-      MYSQL_USER: doctouser
     volumes:
       - doctomed_mysql_data:/var/lib/mysql
     healthcheck:
