@@ -1,6 +1,0 @@
-/*!40101 SET NAMES binary*/;
-/*!40014 SET FOREIGN_KEY_CHECKS=0*/;
-/*!40101 SET SQL_MODE='NO_AUTO_VALUE_ON_ZERO,ONLY_FULL_GROUP_BY,NO_ZERO_IN_DATE,NO_ZERO_DATE,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION'*/;
-/*!40103 SET TIME_ZONE='+00:00' */;
-INSERT INTO `contacts` VALUES(1,3975,"Effety Hassan","effety@gmail.com","Join the Allomed Directory - Connect with Patients Nationwide","fdgdfg","2024-11-05 13:07:04","2024-11-05 13:07:04")
-;
