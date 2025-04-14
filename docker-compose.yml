@@ -1,7 +1,7 @@
 services:
   django:
     build: .
-    image: core
+    image: ghcr.io/aqsaxshoaib/django
     container_name: django
     volumes:
       - .:/app

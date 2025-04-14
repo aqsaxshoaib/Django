@@ -26,7 +26,7 @@ load_dotenv()
 
 # Check for required environment variables
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
-print("KEY:", OPENROUTER_API_KEY)  # Add this temporarily to debug
+
 if not OPENROUTER_API_KEY:
     logger.error("OPENROUTER_API_KEY environment variable is not set")
     raise EnvironmentError("OPENROUTER_API_KEY is required")

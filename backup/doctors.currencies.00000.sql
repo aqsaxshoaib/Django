@@ -1,0 +1,8 @@
+/*!40101 SET NAMES binary*/;
+/*!40014 SET FOREIGN_KEY_CHECKS=0*/;
+/*!40101 SET SQL_MODE='NO_AUTO_VALUE_ON_ZERO,ONLY_FULL_GROUP_BY,NO_ZERO_IN_DATE,NO_ZERO_DATE,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION'*/;
+/*!40103 SET TIME_ZONE='+00:00' */;
+INSERT INTO `currencies` VALUES(1,"CHF","Swiss Franc","doctor-panel/currencies/1735417478_chf.jpg","2024-12-02 20:26:04","2024-12-28 19:24:38")
+,(2,"PTS","Doctomed Points","doctor-panel/currencies/1735417562_8829889.png","2024-12-02 20:26:33","2024-12-28 19:26:02")
+,(3,"POLSO","Polso Coin","doctor-panel/currencies/1735417517_images (1).jpeg","2024-12-02 20:26:48","2024-12-28 19:25:17")
+;

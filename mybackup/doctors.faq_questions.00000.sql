@@ -1,0 +1,8 @@
+/*!40101 SET NAMES binary*/;
+/*!40014 SET FOREIGN_KEY_CHECKS=0*/;
+/*!40101 SET SQL_MODE='NO_AUTO_VALUE_ON_ZERO,ONLY_FULL_GROUP_BY,NO_ZERO_IN_DATE,NO_ZERO_DATE,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION'*/;
+/*!40103 SET TIME_ZONE='+00:00' */;
+INSERT INTO `faq_questions` VALUES(1,"What is your phone number of the Doctor?","yes","2024-06-06 09:39:48","2024-06-06 09:39:48")
+,(7,"What is your location ?","yes","2024-06-20 08:37:04","2024-06-20 08:37:04")
+,(8,"What is your speaking language","yes","2024-06-23 17:00:04","2024-06-23 17:00:04")
+;

@@ -1,0 +1,7 @@
+/*!40101 SET NAMES binary*/;
+/*!40014 SET FOREIGN_KEY_CHECKS=0*/;
+/*!40101 SET SQL_MODE='NO_AUTO_VALUE_ON_ZERO,ONLY_FULL_GROUP_BY,NO_ZERO_IN_DATE,NO_ZERO_DATE,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION'*/;
+/*!40103 SET TIME_ZONE='+00:00' */;
+INSERT INTO `partners` VALUES(3,"All Med-ch","Medical assistance","1719026273_66764261460dd.png","Medical assistance",NULL,"Active","2024-06-22 01:17:53","2024-06-22 01:17:53")
+,(6,"Polso","each pulse pay","1719067038_6676e19ebe63a.png","connect our partner and earn real money",NULL,"Pending","2024-06-22 12:37:18","2024-06-22 12:37:18")
+;

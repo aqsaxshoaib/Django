@@ -1,0 +1,10 @@
+/*!40101 SET NAMES binary*/;
+/*!40014 SET FOREIGN_KEY_CHECKS=0*/;
+/*!40101 SET SQL_MODE='NO_AUTO_VALUE_ON_ZERO,ONLY_FULL_GROUP_BY,NO_ZERO_IN_DATE,NO_ZERO_DATE,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION'*/;
+/*!40103 SET TIME_ZONE='+00:00' */;
+INSERT INTO `users` VALUES(161,"Effety","Hassan","effety@gmail.com","user","male","1994-12-03",210,5556,"604,605,624","1742562102_67dd63367db08.jpeg","+4179 254 33 21","27","1201",NULL,"Rue Philippe-Plantamour",NULL,"onsite","",7,"1",NULL,NULL,"Specialist in general medicine (NL), FMH member\r\nIn our family doctor\'s practice we are available to you with a wide range of diagnostic and therapeutic services. If medically necessary, we also make home visits. If you have any questions or suggestions, please feel free to contact us.",NULL,"47.40247439","8.498825700",NULL,"1","1","0","0","Dr.","12","effety@gmail.com","+4179 250 33 21","+4121 254 33 21",NULL,"1",NULL,0,"www.etc.com",NULL,NULL,243565,65.00,NULL,NULL,NULL,NULL,"2025-03-21 07:01:42")
+,(162,"Admin",NULL,"Admin@gmail.com","admin",NULL,NULL,210,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,"onsite",NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,"0","1","0","0",NULL,"72",NULL,NULL,NULL,NULL,NULL,NULL,0,NULL,NULL,NULL,243566,NULL,NULL,NULL,NULL,NULL,"2024-07-23 23:37:49")
+;
+INSERT INTO `users` VALUES(2081,"David","Kursner ","","user","male",NULL,210,4,"","","021 533 06 40","24","1010","","Chemin de Verdonnet 9","","onsite","General practitioner",10,"","","","","","","","1","0","0","","","Dr.","","","","","","",NULL,0,"https://www.lasource.ch/clinique-de-la-source/liste-des-medecins-accredites/kursner-david",NULL,NULL,243567,NULL,NULL,NULL,NULL,"2024-09-11 13:52:00","2024-09-11 13:52:00")
+,(2082,"Peter A.","Steigmeier ","info@ifa-online.ch","user","male",NULL,210,53,"","","056 205 44 44","1","5400","","Kreuzweg 3","","onsite","General practitioner",10,"","","","","","","","1","0","0","","","Dr. med. ","","","","","","",NULL,0,"https://www.ifa-online.ch/fr/pour-les-particuliers/",NULL,NULL,243568,NULL,NULL,NULL,NULL,"2024-09-11 13:52:00","2024-09-11 13:52:00")
+;

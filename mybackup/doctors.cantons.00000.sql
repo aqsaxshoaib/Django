@@ -1,0 +1,33 @@
+/*!40101 SET NAMES binary*/;
+/*!40014 SET FOREIGN_KEY_CHECKS=0*/;
+/*!40101 SET SQL_MODE='NO_AUTO_VALUE_ON_ZERO,ONLY_FULL_GROUP_BY,NO_ZERO_IN_DATE,NO_ZERO_DATE,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION'*/;
+/*!40103 SET TIME_ZONE='+00:00' */;
+INSERT INTO `cantons` VALUES(1,"Aargau","active",NULL,NULL)
+,(2,"Appenzell Ausserrhoden","active",NULL,NULL)
+,(3,"Appenzell Innerrhoden","active",NULL,NULL)
+,(4,"Basel-Landschaft","active",NULL,NULL)
+,(5,"Basel-Stadt","active",NULL,NULL)
+,(6,"Bern","active",NULL,NULL)
+,(7,"Fribourg","active",NULL,NULL)
+,(8,"Geneva","active",NULL,NULL)
+,(9,"Glarus","active",NULL,NULL)
+,(10,"Graubünden","active",NULL,NULL)
+,(11,"Jura","active",NULL,NULL)
+,(12,"Lucerne","active",NULL,NULL)
+,(13,"Neuchâtel","active",NULL,NULL)
+,(14,"Nidwalden","active",NULL,NULL)
+,(15,"Obwalden","active",NULL,NULL)
+,(16,"Schaffhausen","active",NULL,NULL)
+,(17,"Schwyz","active",NULL,NULL)
+,(18,"Solothurn","active",NULL,NULL)
+,(19,"St. Gallen","active",NULL,NULL)
+,(20,"Thurgau","active",NULL,NULL)
+,(21,"Ticino","active",NULL,NULL)
+,(22,"Uri","active",NULL,NULL)
+,(23,"Valais","active",NULL,NULL)
+,(24,"Vaud","active",NULL,NULL)
+,(25,"Zug","active",NULL,NULL)
+,(26,"Zurich","active",NULL,NULL)
+,(27,"Genève","1","2025-03-06 07:17:47","2025-03-06 07:17:47")
+,(28,"Zürich","1","2025-03-06 10:09:18","2025-03-06 10:09:18")
+;

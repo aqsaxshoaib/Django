@@ -1,0 +1,6 @@
+/*!40101 SET NAMES binary*/;
+/*!40014 SET FOREIGN_KEY_CHECKS=0*/;
+/*!40101 SET SQL_MODE='NO_AUTO_VALUE_ON_ZERO,ONLY_FULL_GROUP_BY,NO_ZERO_IN_DATE,NO_ZERO_DATE,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION'*/;
+/*!40103 SET TIME_ZONE='+00:00' */;
+INSERT INTO `web_contents` VALUES(1,"Book an appointment with medical expert","Book a medical appointment in Switzerland","Find Availability","Find here to available doctors that you are looking for.","Book Appointments","Easy dashboard where you can book the appointment","E-mail reminders","You will receive an e-mail the day of the appointment","Manage Appointments","Easy dashboard where you can manage your appointments","Reschedule appointments","- Easy dashboard where you can reschedule your appointments","Cancel Appointments","Easy dashboard where you can cancel your appointment\'s","You are a practitioner and wants to join our free directory ?","Our directory is totally free and you can do telemedicine with our Allomed application.","Daily E-Mail","Daily e-mail to remind patient of\r\nthe appointment","Telemedicine Application","Possibility to get the Telemedicine\r\napplication with the directory\r\ndirectly","Visibility For Patients","Improve, for free, your visibility for\r\npatients","Allomed.ch","Swiss Hosted Servers  - Swiss Communication Security",NULL,"2024-07-17 11:42:57")
+;

@@ -1,0 +1,357 @@
+# Started dump at: 2025-04-14 09:32:20
+[config]
+quote_character = BACKTICK
+
+[myloader_session_variables]
+SQL_MODE='NO_AUTO_VALUE_ON_ZERO,ONLY_FULL_GROUP_BY,NO_ZERO_IN_DATE,NO_ZERO_DATE,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION' /*!40101
+
+[source]
+# Channel_Name = '' # It can be use to setup replication FOR CHANNEL
+File = binlog.000054
+Position = 2066
+Executed_Gtid_Set = 
+
+[`doctors`.`admins`]
+real_table_name=admins
+rows = 18
+
+[`doctors`.`ads_settings`]
+real_table_name=ads_settings
+rows = 3
+
+[`doctors`.`advertises`]
+real_table_name=advertises
+rows = 16
+
+[`doctors`.`auth_group_permissions`]
+real_table_name=auth_group_permissions
+rows = 0
+
+[`doctors`.`auth_group`]
+real_table_name=auth_group
+rows = 0
+
+[`doctors`.`auth_permission`]
+real_table_name=auth_permission
+rows = 28
+
+[`doctors`.`auth_user_groups`]
+real_table_name=auth_user_groups
+rows = 0
+
+[`doctors`.`auth_user_user_permissions`]
+real_table_name=auth_user_user_permissions
+rows = 0
+
+[`doctors`.`auth_user`]
+real_table_name=auth_user
+rows = 0
+
+[`doctors`.`banner_images`]
+real_table_name=banner_images
+rows = 43
+
+[`doctors`.`blogs`]
+real_table_name=blogs
+rows = 3
+
+[`doctors`.`book_categories`]
+real_table_name=book_categories
+rows = 4
+
+[`doctors`.`bookings`]
+real_table_name=bookings
+rows = 26
+
+[`doctors`.`books`]
+real_table_name=books
+rows = 12
+
+[`doctors`.`boosted_members`]
+real_table_name=boosted_members
+rows = 3
+
+[`doctors`.`cantons`]
+real_table_name=cantons
+rows = 28
+
+[`doctors`.`chats`]
+real_table_name=chats
+rows = 11
+
+[`doctors`.`cities`]
+real_table_name=cities
+rows = 3975
+
+[`doctors`.`contacts`]
+real_table_name=contacts
+rows = 1
+
+[`doctors`.`countries`]
+real_table_name=countries
+rows = 243
+
+[`doctors`.`coupons`]
+real_table_name=coupons
+rows = 6
+
+[`doctors`.`currencies`]
+real_table_name=currencies
+rows = 3
+
+[`doctors`.`dashboard_images`]
+real_table_name=dashboard_images
+rows = 9
+
+[`doctors`.`diseases`]
+real_table_name=diseases
+rows = 48
+
+[`doctors`.`django_admin_log`]
+real_table_name=django_admin_log
+rows = 0
+
+[`doctors`.`django_content_type`]
+real_table_name=django_content_type
+rows = 7
+
+[`doctors`.`django_migrations`]
+real_table_name=django_migrations
+rows = 19
+
+[`doctors`.`django_session`]
+real_table_name=django_session
+rows = 0
+
+[`doctors`.`doctor_certificates`]
+real_table_name=doctor_certificates
+rows = 4
+
+[`doctors`.`doctor_networks`]
+real_table_name=doctor_networks
+rows = 14
+
+[`doctors`.`event_sliders`]
+real_table_name=event_sliders
+rows = 12
+
+[`doctors`.`exchange_rates`]
+real_table_name=exchange_rates
+rows = 2
+
+[`doctors`.`expertises`]
+real_table_name=expertises
+rows = 1
+
+[`doctors`.`failed_jobs`]
+real_table_name=failed_jobs
+rows = 0
+
+[`doctors`.`faq_answers`]
+real_table_name=faq_answers
+rows = 4
+
+[`doctors`.`faq_questions`]
+real_table_name=faq_questions
+rows = 3
+
+[`doctors`.`favorite_doctors`]
+real_table_name=favorite_doctors
+rows = 2
+
+[`doctors`.`features`]
+real_table_name=features
+rows = 0
+
+[`doctors`.`feedback_members`]
+real_table_name=feedback_members
+rows = 1
+
+[`doctors`.`friends`]
+real_table_name=friends
+rows = 13
+
+[`doctors`.`health_tip_details`]
+real_table_name=health_tip_details
+rows = 6
+
+[`doctors`.`health_tips`]
+real_table_name=health_tips
+rows = 1
+
+[`doctors`.`institutes`]
+real_table_name=institutes
+rows = 1
+
+[`doctors`.`job_categories`]
+real_table_name=job_categories
+rows = 8
+
+[`doctors`.`job_posts`]
+real_table_name=job_posts
+rows = 3
+
+[`doctors`.`languages`]
+real_table_name=languages
+rows = 109
+
+[`doctors`.`member_events`]
+real_table_name=member_events
+rows = 9
+
+[`doctors`.`member_groups`]
+real_table_name=member_groups
+rows = 4
+
+[`doctors`.`member_titles`]
+real_table_name=member_titles
+rows = 2
+
+[`doctors`.`messages`]
+real_table_name=messages
+rows = 6
+
+[`doctors`.`migrations`]
+real_table_name=migrations
+rows = 109
+
+[`doctors`.`mini_sliders`]
+real_table_name=mini_sliders
+rows = 4
+
+[`doctors`.`necessary_categories`]
+real_table_name=necessary_categories
+rows = 13
+
+[`doctors`.`necessary_sliders`]
+real_table_name=necessary_sliders
+rows = 8
+
+[`doctors`.`necessary_urls`]
+real_table_name=necessary_urls
+rows = 4
+
+[`doctors`.`page_contents`]
+real_table_name=page_contents
+rows = 129
+
+[`doctors`.`partners`]
+real_table_name=partners
+rows = 2
+
+[`doctors`.`password_reset_tokens`]
+real_table_name=password_reset_tokens
+rows = 0
+
+[`doctors`.`patients`]
+real_table_name=patients
+rows = 4
+
+[`doctors`.`payment_history`]
+real_table_name=payment_history
+rows = 3
+
+[`doctors`.`personal_access_tokens`]
+real_table_name=personal_access_tokens
+rows = 0
+
+[`doctors`.`personals`]
+real_table_name=personals
+rows = 3
+
+[`doctors`.`phone_records`]
+real_table_name=phone_records
+rows = 2
+
+[`doctors`.`plans`]
+real_table_name=plans
+rows = 13
+
+[`doctors`.`referrals`]
+real_table_name=referrals
+rows = 1
+
+[`doctors`.`reviews`]
+real_table_name=reviews
+rows = 3
+
+[`doctors`.`sections`]
+real_table_name=sections
+rows = 1
+
+[`doctors`.`services`]
+real_table_name=services
+rows = 8
+
+[`doctors`.`settings`]
+real_table_name=settings
+rows = 2
+
+[`doctors`.`sliders`]
+real_table_name=sliders
+rows = 13
+
+[`doctors`.`social_media_links`]
+real_table_name=social_media_links
+rows = 2
+
+[`doctors`.`specialties`]
+real_table_name=specialties
+rows = 58
+
+[`doctors`.`subscriptions`]
+real_table_name=subscriptions
+rows = 1
+
+[`doctors`.`survey_answers`]
+real_table_name=survey_answers
+rows = 0
+
+[`doctors`.`survey_categories`]
+real_table_name=survey_categories
+rows = 30
+
+[`doctors`.`survey_questions`]
+real_table_name=survey_questions
+rows = 0
+
+[`doctors`.`surveys`]
+real_table_name=surveys
+rows = 0
+
+[`doctors`.`time_slots`]
+real_table_name=time_slots
+rows = 334
+
+[`doctors`.`translations`]
+real_table_name=translations
+rows = 1284
+
+[`doctors`.`users`]
+real_table_name=users
+rows = 1913
+
+[`doctors`.`verifications`]
+real_table_name=verifications
+rows = 0
+
+[`doctors`.`verify_documents`]
+real_table_name=verify_documents
+rows = 0
+
+[`doctors`.`wallets`]
+real_table_name=wallets
+rows = 5806
+
+[`doctors`.`web_contents`]
+real_table_name=web_contents
+rows = 1
+
+[`doctors`.`web_images`]
+real_table_name=web_images
+rows = 3
+
+[`doctors`.`work_times`]
+real_table_name=work_times
+rows = 9
+# Finished dump at: 2025-04-14 09:32:21
