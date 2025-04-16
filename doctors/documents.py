@@ -1,19 +1,15 @@
 #document.py
 from django_elasticsearch_dsl import Document
 from django_elasticsearch_dsl import fields as dsl_fields
-from .custom_fields import DenseVectorField
 from django_elasticsearch_dsl.registries import registry
-from .utils import *
+from django.core.exceptions import ObjectDoesNotExist
 from .models import *
 import logging
 logger = logging.getLogger(__name__)
 
 @registry.register_document
 class UserDocument(Document):
-    specialty_vector = DenseVectorField(dims=384)
-    about_me_vector = DenseVectorField(dims=384)
 
-    # Keep other fields using dsl_fields
     specialties = dsl_fields.NestedField(properties={
         'name': dsl_fields.TextField(
             analyzer='specialty_analyzer',
@@ -23,68 +19,6 @@ class UserDocument(Document):
             }
         ),
     })
-
-    def prepare_specialty_vector(self, instance):
-        try:
-            specialty_text = f"{instance.specialties.name if instance.specialties else ''}".strip()
-
-            # Skip individual processing during bulk operations
-            if hasattr(instance, '_bulk_preparation'):
-                return None
-
-            logger.debug(f"Preparing specialty vector for {instance.id}")
-            vector = generate_embedding(specialty_text)
-            return vector
-        except Exception as e:
-            logger.error(f"Error preparing specialty vector: {str(e)}")
-            return [0.0] * 384  # Match model dimensions
-
-    def prepare_about_me_vector(self, instance):
-        try:
-            about_text = f"{instance.about_me or ''} {instance.healthcare_professional_info or ''}".strip()
-
-            # Skip individual processing during bulk operations
-            if hasattr(instance, '_bulk_preparation'):
-                return None
-
-            logger.debug(f"Preparing about_me vector for {instance.id}")
-            vector = generate_embedding(about_text)
-            return vector
-        except Exception as e:
-            logger.error(f"Error preparing about_me vector: {str(e)}")
-            return [0.0] * 384  # Match model dimensions
-
-    # Add bulk processing optimization
-    def bulk_prepare(self, instances):
-        """Batch process embeddings for better performance"""
-        try:
-            # Collect texts for batch processing
-            specialty_texts = []
-            about_me_texts = []
-
-            for inst in instances:
-                # Specialty text
-                specialty_text = f"{inst.specialties.name if inst.specialties else ''}".strip()
-                specialty_texts.append(self.prepare_specialty_vector(inst))
-
-                # About me text
-                about_text = f"{inst.about_me or ''} {inst.healthcare_professional_info or ''}".strip()
-                about_me_texts.append(self.prepare_about_me_vector(inst))
-
-            # Batch embed
-            specialty_vectors = batch_embed_medical_text(specialty_texts)
-            about_me_vectors = batch_embed_medical_text(about_me_texts)
-
-            # Store prepared data
-            for inst, s_vec, a_vec in zip(instances, specialty_vectors, about_me_vectors):
-                inst._prepared_data = {
-                    'specialty_vector': s_vec.tolist(),
-                    'about_me_vector': a_vec.tolist()
-                }
-
-        except Exception as e:
-            logger.error(f"Bulk preparation failed: {str(e)}")
-            raise
 
 
     def prepare_languages(self, instance):
@@ -97,7 +31,7 @@ class UserDocument(Document):
 
 
 
-    languages = dsl_fields.TextField(  # Fixed this line
+    languages = dsl_fields.TextField(
         attr='get_language_names',
         analyzer='standard',
         fields={
@@ -155,6 +89,23 @@ class UserDocument(Document):
     )
 
     healthcare_professional_info = dsl_fields.TextField()
+
+    def prepare(self, instance):
+        """Safe document preparation with error handling"""
+        try:
+            data = super().prepare(instance)
+
+            # Handle location separately
+            try:
+                data['location'] = self.prepare_location(instance)
+            except (ValueError, TypeError) as e:
+                logger.warning(f"Invalid location for user {instance.id}: {e}")
+                data['location'] = None
+
+            return data
+        except Exception as e:
+            logger.error(f"Failed to index user {instance.id}: {str(e)}")
+            return None
 
     def prepare_reviews(self, instance):
         """Collect all user reviews"""
@@ -220,19 +171,6 @@ class UserDocument(Document):
             pass
         return None
 
-    # def prepare_reviews(self, instance):
-    #     """Safe review preparation"""
-    #     try:
-    #         if instance.reviews_id and Review.objects.filter(id=instance.reviews_id).exists():
-    #             return {
-    #                 "rating": instance.reviews.rating,
-    #                 "comments": instance.reviews.comments,
-    #                 "status": instance.reviews.status
-    #             }
-    #     except ObjectDoesNotExist:
-    #         pass
-    #     return None
-
     class Index:
         name = 'doctors'
         settings = {
@@ -269,6 +207,7 @@ class UserDocument(Document):
                         'type': 'stemmer',
                         'name': 'english'
                     },
+
                     'snowball_english': {
                         'type': 'snowball',
                         'language': 'English'
@@ -282,7 +221,6 @@ class UserDocument(Document):
                 }
             }
         }
-
 
         using = 'default'
 
@@ -312,13 +250,3 @@ class UserDocument(Document):
             'zefix_ide',
             'about_me',
         ]
-        auto_prepare = False
-
-    def prepare(self, instance):
-        data = super().prepare(instance)
-        # Manually add vector fields
-        data.update({
-            'specialty_vector': self.prepare_specialty_vector(instance),
-            'about_me_vector': self.prepare_about_me_vector(instance)
-        })
-        return data

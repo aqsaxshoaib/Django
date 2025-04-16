@@ -19,6 +19,7 @@ services:
       - mysql
       - redis  # Add Redis dependency
 
+
   # Add this Redis service
   redis:
     image: redis:alpine

@@ -29,8 +29,6 @@ DEBUG = False
 
 ALLOWED_HOSTS = ['*']
 
-#CSRF_TRUSTED_ORIGINS = ['https://']
-
 # Application definition
 
 INSTALLED_APPS = [
@@ -70,6 +68,7 @@ ELASTICSEARCH_DSL = {
 
 # CORS Settings
 CORS_ALLOW_ALL_ORIGINS = True  # For development only
+
 # For production, use:
 # CORS_ALLOWED_ORIGINS = [
 #     "https://yourdomain.com",
@@ -138,12 +137,14 @@ DATABASES = {
         'OPTIONS': {
             'init_command': "SET sql_mode='STRICT_TRANS_TABLES'",
             'connect_timeout': 30,
-            'read_timeout': 60,
-            'write_timeout': 60,
-        }
+            'read_timeout': 300,
+            'write_timeout': 300,
+            'charset': 'utf8mb4',
+            'autocommit': True,
+        },
+        'CONN_MAX_AGE': 600,  # Keep connections open for 10 minutes
     }
 }
-
 
 # Password validation
 # https://docs.djangoproject.com/en/5.1/ref/settings/#auth-password-validators

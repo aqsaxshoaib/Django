@@ -1,23 +1,26 @@
 FROM python:3.10-slim
 
-ENV PYTHONBUFFERED=1
+# Set environment variables
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1
 
+# Set working directory
 WORKDIR /app
 
-COPY requirements.txt /app/
-
-# Install dependencies first (better caching)
-RUN pip install --upgrade pip && \
-    apt-get update && \
-    apt-get install -y \
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
     default-mysql-client \
     default-libmysqlclient-dev \
     pkg-config \
-    build-essential && \
-    rm -rf /var/lib/apt/lists/* && \
-    pip install -r requirements.txt
+    build-essential \
+    && rm -rf /var/lib/apt/lists/*
 
-# Copy the rest of the application
+# Install Python dependencies
+COPY requirements.txt /app/
+RUN pip install --upgrade pip && \
+    pip install --default-timeout=100 -r requirements.txt --no-cache-dir
+
+# Copy the entire app
 COPY . /app/
 
 RUN python manage.py collectstatic --noinput

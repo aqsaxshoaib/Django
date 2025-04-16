@@ -47,9 +47,9 @@ SYSTEM_PROMPT = """You are a medical assistant for Doctomed.ch. Be realistic and
 - Guide the patient effectively and concisely if asked for some specific symtoms, or any health related issue.
 - DONOT give doctor recommendations from other websites
 - Include the JSON block and the recommendation message ONLY when 'questioning_complete' is true.
+- MUST return JSON for any specialist type mentioned, even if the user just types a specialist name
 
 1. Direct Requests (when users ask something to find/recommend/search doctors):
-- ALWAYS return JSON for any specialist type mentioned, even if the user just types a specialist name
 - Extract: 
 ```json
 {
@@ -77,7 +77,7 @@ SYSTEM_PROMPT = """You are a medical assistant for Doctomed.ch. Be realistic and
 }
 ```
 NOTE:
-ALWAYS include the JSON block at the end when  recommending specialist_type
+ALWAYS include the JSON block at the end when recommending specialist_type
 Add "Here are the best {specialist_type}s recommended for you:\n\n" before returning JSON
 This JSON must be machine-parsable and should be at the END of your helpful response.
 """
@@ -86,7 +86,7 @@ This JSON must be machine-parsable and should be at the END of your helpful resp
 
 def optimize_llm_call():
     return client.chat.completions.create(
-        model="deepseek-chat:free",
+        model="deepseek/deepseek-chat:free",
         messages=messages,
         temperature=0.2,
         max_tokens=150,
@@ -109,7 +109,7 @@ redis_pool = redis.ConnectionPool(
     host=os.getenv("REDIS_HOST", "localhost"),
     port=6379,
     db=0,
-    max_connections=1000  # Proper parameter name and value
+    max_connections=1000
 )
 
 
@@ -155,21 +155,6 @@ async def handle_message(user_message):
             lambda: requests.post(API_ENDPOINT, json=user_message)
         )
 
-def sanitize_input(text):
-    # Remove any special characters except allowed medical terms
-    return re.sub(r"[^a-zA-Z0-9\sà-üÀ-Ü\-'.,]", '', text)[:500]
-
-
-from presidio_analyzer import AnalyzerEngine
-from presidio_anonymizer import AnonymizerEngine
-
-
-def anonymize_text(text):
-    analyzer = AnalyzerEngine()
-    anonymizer = AnonymizerEngine()
-
-    results = analyzer.analyze(text=text, language='en')
-    return anonymizer.anonymize(text, results).text
 
 @ratelimit(key='user', rate='100/m', block=True)
 @csrf_exempt
@@ -275,8 +260,7 @@ def chatbot(request):
                     country=user_country,
                     city=user_city,
                     language=preferred_language,
-                    telehealth_required=telehealth_preference,
-                    use_vector_search=True  # Enable vector search
+                    telehealth_required=telehealth_preference
                 )
 
 
@@ -350,8 +334,8 @@ def remove_json_from_reply(bot_reply):
     elif "```" in bot_reply:
         parts = bot_reply.split("```")
         # Remove the JSON code block
-        clean_parts = [parts[0]]  # Start with the first part
-        for i in range(2, len(parts), 2):  # Add the parts that are not code blocks
+        clean_parts = [parts[0]]
+        for i in range(2, len(parts), 2):
             if i < len(parts):
                 clean_parts.append(parts[i])
         clean_reply = "".join(clean_parts).strip()
@@ -395,66 +379,6 @@ def extract_json_from_response(response):
         return None
 
 
-@csrf_exempt
-def update_vector_embeddings(request):
-    """Update vector embeddings for all doctors"""
-    if request.method != "POST":
-        return JsonResponse({"error": "Invalid method"}, status=405)
-
-    try:
-        from .utils import generate_embedding
-
-        # Get all users to update
-        users = User.objects.all()
-        total_count = users.count()
-        processed_count = 0
-        error_count = 0
-
-        # Process in batches
-        batch_size = 50
-        for i in range(0, total_count, batch_size):
-            batch = users[i:i + batch_size]
-            bulk_actions = []
-
-            for user in batch:
-                try:
-                    # Generate specialty vector
-                    specialty_text = ""
-                    if user.specialties_id:
-                        specialty_text = user.specialties.name
-
-                    specialty_vector = generate_embedding(specialty_text)
-
-                    # Generate about_me vector
-                    about_text = user.about_me if user.about_me else ""
-                    if user.healthcare_professional_info:
-                        about_text += " " + user.healthcare_professional_info
-
-                    about_me_vector = generate_embedding(about_text)
-
-                    # Update document in Elasticsearch
-                    doc = UserDocument.get(id=user.id)
-                    doc.update(
-                        specialty_vector=specialty_vector,
-                        about_me_vector=about_me_vector
-                    )
-
-                    processed_count += 1
-                except Exception as e:
-                    logger.error(f"Error updating vector for user {user.id}: {str(e)}")
-                    error_count += 1
-
-            logger.info(f"Processed {processed_count}/{total_count} doctors")
-
-        return JsonResponse({
-            "status": "success",
-            "message": f"Updated vectors for {processed_count} doctors with {error_count} errors."
-        })
-
-    except Exception as e:
-        logger.error(f"Vector update error: {str(e)}", exc_info=True)
-        return JsonResponse({"error": str(e)}, status=500)
-
 def create_default_json_response():
     """Create a default JSON response when extraction fails"""
     return {
@@ -470,12 +394,12 @@ def optimize_es_query():
         "query": {
             "bool": {
                 "must": [
-                    {"term": {"speciality.raw": specialty}},
-                    {"term": {"city.raw": location}},
+                    {"term": {"speciality.raw": specialties}},
+                    {"term": {"city.raw": city}},
                     {"range": {"average_rating": {"gte": 4}}}
                 ],
                 "should": [
-                    {"term": {"insurance_providers": insurance}},
+                    {"term": {"patient_status": patient_status}},
                     {"term": {"languages": language}}
                 ]
             }
@@ -545,23 +469,6 @@ def build_elasticsearch_query(specialist_type, country=None, city=None,
             }
         }
         bool_query["must"].append(specialty_query)
-    # Insurance provider
-    # if insurance_provider:
-    #     insurance_query = {
-    #         "multi_match": {
-    #             "query": insurance_provider,
-    #             "fields": [
-    #                 "accepted_insurance_providers.exact^10",  # Boost exact matches
-    #                 "accepted_insurance_providers^5",  # Normal match
-    #                 "accepted_insurance_providers.edge_ngram^3"  # Partial matches
-    #             ],
-    #             "fuzziness": "AUTO",
-    #             "operator": "or",
-    #             "type": "best_fields",
-    #             "minimum_should_match": "30%"
-    #         }
-    #     }
-    #     bool_query["must"].append(insurance_query)
 
     # Location filter
     if country:
@@ -575,7 +482,7 @@ def build_elasticsearch_query(specialist_type, country=None, city=None,
             }
         })
 
-        # City filter (fuzzy match)
+    # City filter (fuzzy match)
     if city:
         bool_query["must"].append({
             "match": {
@@ -614,17 +521,12 @@ def build_elasticsearch_query(specialist_type, country=None, city=None,
 
 @circuit(failure_threshold=5, recovery_timeout=60)
 def find_doctors_with_elasticsearch(specialist_type, country=None, city=None,
-                                    language=None, telehealth_required=False,
-                                    use_vector_search=True):
-    """Search doctors using Elasticsearch DSL with vector search capability"""
+                                    language=None, telehealth_required=False):
     try:
         logger.info(
             f"Searching for doctors with: {specialist_type}, country={country}, city={city}, {language}, {telehealth_required}")
         search = UserDocument.search()
 
-        # Generate vector embedding for the search query
-        from .utils import generate_embedding
-        query_vector = generate_embedding(specialist_type)
 
         # Initialize a bool query
         bool_query = build_elasticsearch_query(
@@ -635,54 +537,29 @@ def find_doctors_with_elasticsearch(specialist_type, country=None, city=None,
             telehealth_required=telehealth_required
         )
 
-        # Create combined query with both keyword and vector search
-        combined_query = {
-            "bool": {
-                "must": [{"bool": bool_query}],
-                "should": []
-            }
-        }
-
-        # Add vector search if enabled
-        if use_vector_search and query_vector:
-            vector_queries = [
-                {
-                    "script_score": {
-                        "query": {"bool": bool_query},
-                        "script": {
-                            "source": "(cosineSimilarity(params.query_vector, 'specialty_vector') + 1.0) * 3.0",
-                            "params": {"query_vector": query_vector}
-                        }
-                    }
-                }
-            ]
-            combined_query["bool"]["should"].extend(vector_queries)
-
         # Log the actual query being sent to Elasticsearch
-        logger.info(f"Elasticsearch query: {json.dumps(combined_query)}")
+        logger.info(f"Elasticsearch query: {json.dumps(bool_query)}")
 
         # Execute the search with appropriate sorting
-        if use_vector_search and query_vector:
-            # When using vector search, rely on script_score for ranking
-            response = search.query(combined_query)[:6].execute()
-        else:
-            # Traditional search with explicit sorting
-            response = search.query({"bool": bool_query}) \
-                           .sort({'average_rating': {'order': 'desc'}})[:6].execute()
+        response = search.query({"bool": bool_query}) \
+                       .sort({'average_rating': {'order': 'desc'}})[:8].execute()
 
         doctors = [hit.to_dict() for hit in response]
+
+
         logger.info(f"Found {len(doctors)} doctors via Elasticsearch")
+        if len(doctors) == 0:
+            # If no doctors found, log the raw response for debugging
+            logger.warning(f"No doctors found. Raw Elasticsearch response: {response.to_dict()}")
 
         # Fallback logic remains the same...
 
         return doctors
 
-    except ConnectionError as e:
-        logger.warning(f"Elasticsearch connection error: {e}, falling back to DB")
-        return find_doctors(specialist_type, country, city,
-                            languages, telehealth_required)
     except Exception as e:
+
         logger.error(f"Search error: {str(e)}", exc_info=True)
+
         return []
 
 
@@ -969,78 +846,3 @@ def initialize_elasticsearch(request):
         import traceback
         traceback.print_exc()
         return JsonResponse({"error": str(e)}, status=500)
-
-
-@csrf_exempt
-def debug_db_schema(request):
-    """Endpoint to check database schema with improved security"""
-    try:
-        # Get database credentials from environment variables
-        db_host = os.getenv("DB_HOST", "localhost")
-        db_user = os.getenv("DB_USER", "root")
-        db_password = os.getenv("DB_PASSWORD", "")  # Empty default for security
-        db_name = os.getenv("DB_NAME", "doctor_directory")
-
-        # Check if required credentials are set
-        if not db_password:
-            return JsonResponse({"error": "Database credentials not properly configured"}, status=500)
-
-        conn = mysql.connector.connect(
-            host=db_host,
-            user=db_user,
-            password=db_password,
-            database=db_name
-        )
-        cursor = conn.cursor(dictionary=True)
-
-        # Get table structure
-        cursor.execute("DESCRIBE users")
-        columns = cursor.fetchall()
-
-        column_names = [col['Field'] for col in columns]
-
-        cursor.close()
-        conn.close()
-
-        return JsonResponse({
-            "column_names": column_names
-        })
-
-    except Exception as e:
-        logger.error(f"Database schema error: {str(e)}", exc_info=True)
-        return JsonResponse({"error": "Database connection error"}, status=500)
-
-
-@csrf_exempt
-def view_indexed_data(request):
-    """Endpoint to view indexed doctors data with better error handling"""
-    try:
-        from elasticsearch_dsl.connections import connections
-        es = connections.get_connection()
-
-        # Get the first 10 doctors from the index
-        response = es.search(
-            index=UserDocument._index._name,
-            body={
-                "query": {"match_all": {}},
-                "size": 10
-            }
-        )
-
-        # Extract hits
-        hits = response.get('hits', {}).get('hits', [])
-        doctors = [hit['_source'] for hit in hits]
-
-        # Get total count
-        total = response.get('hits', {}).get('total', {}).get('value', 0)
-
-        return JsonResponse({
-            "total_indexed": total,
-            "sample_data": doctors
-        })
-
-    except ConnectionError:
-        return JsonResponse({"error": "Could not connect to Elasticsearch"}, status=503)
-    except Exception as e:
-        logger.error(f"Error viewing indexed data: {str(e)}", exc_info=True)
-        return JsonResponse({"error": "An error occurred while retrieving indexed data"}, status=500)
