@@ -20,23 +20,23 @@ class UserDocument(Document):
         ),
     })
 
-
     def prepare_languages(self, instance):
-        """Alternative preparation method"""
-        return [lang.name for lang in instance.languages]
+        """Convert to list of lowercase language names"""
+        try:
+            return [lang.name.lower() for lang in instance.languages.all()]
+        except (AttributeError, ObjectDoesNotExist):
+            return []
 
-    def get_language_names(self):
-        """Helper method to get language names"""
-        return ", ".join(lang.name for lang in self.languages)
+    def prepare_is_online(self, instance):
+        """Convert char field to boolean"""
+        return instance.is_online == '1'
 
 
 
-    languages = dsl_fields.TextField(
-        attr='get_language_names',
-        analyzer='standard',
+    languages = dsl_fields.KeywordField(
         fields={
-            'raw': dsl_fields.KeywordField(),
-            'suggest': dsl_fields.CompletionField()
+            'exact': dsl_fields.KeywordField(normalizer='lowercase_normalizer'),
+            'edge_ngram': dsl_fields.TextField(analyzer='edge_ngram_analyzer')
         }
     )
 
@@ -45,16 +45,21 @@ class UserDocument(Document):
     country = dsl_fields.NestedField(properties={
         'name': dsl_fields.TextField(
             fields={
-                'exact': dsl_fields.KeywordField()
+                'exact': dsl_fields.KeywordField(normalizer='lowercase_normalizer'),
+                'edge_ngram': dsl_fields.TextField(analyzer='edge_ngram_analyzer')
             }
         ),
     })
 
     city = dsl_fields.NestedField(
         properties={
-            'name': dsl_fields.TextField(),
+            'name': dsl_fields.TextField(
+            fields={
+                'exact': dsl_fields.KeywordField(normalizer='lowercase_normalizer'),
+                'edge_ngram': dsl_fields.TextField(analyzer='edge_ngram_analyzer')
+            }),
             'canton': dsl_fields.ObjectField(properties={
-                'name': dsl_fields.TextField(),
+            'name': dsl_fields.TextField(),
             })
         }
     )
@@ -89,6 +94,8 @@ class UserDocument(Document):
     )
 
     healthcare_professional_info = dsl_fields.TextField()
+
+
 
     def prepare(self, instance):
         """Safe document preparation with error handling"""
@@ -180,7 +187,7 @@ class UserDocument(Document):
                 'analyzer': {
                     'specialty_analyzer': {
                         'type': 'custom',
-                        'tokenizer': 'keyword',
+                        'tokenizer': 'standard',
                         'filter': [
                             'lowercase',
                             'asciifolding',
@@ -197,7 +204,7 @@ class UserDocument(Document):
                 'tokenizer': {
                     'edge_ngram_tokenizer': {
                         'type': 'edge_ngram',
-                        'min_gram': 3,
+                        'min_gram': 4,
                         'max_gram': 15,
                         'token_chars': ['letter']
                     }
@@ -250,3 +257,15 @@ class UserDocument(Document):
             'zefix_ide',
             'about_me',
         ]
+
+    def save(self, **kwargs):
+        """
+        Override the save method to index in bulk
+        """
+        from elasticsearch_dsl.connections import connections
+        from elasticsearch.helpers import bulk
+
+        # Index documents in smaller chunks
+        client = connections.get_connection()
+        actions = [self.to_dict() for self in Doctor.objects.all()]
+        bulk(client, actions, chunk_size=500)

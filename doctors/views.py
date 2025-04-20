@@ -14,6 +14,8 @@ from .models import User
 from .serializers import UserSerializer
 from .documents import UserDocument
 from django_ratelimit.decorators import ratelimit
+from django.db import OperationalError, transaction
+from elasticsearch.helpers import bulk
 from circuitbreaker import circuit
 import logging
 import time
@@ -27,9 +29,9 @@ load_dotenv()
 # Check for required environment variables
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 
-if not OPENROUTER_API_KEY:
-    logger.error("OPENROUTER_API_KEY environment variable is not set")
-    raise EnvironmentError("OPENROUTER_API_KEY is required")
+if not OPENROUTER_API_KEY or not OPENROUTER_API_KEY.startswith('sk-or-v1-'):
+    logger.error("Invalid OpenRouter API key format")
+    raise EnvironmentError("Invalid OpenRouter API key format")
 
 ELASTICSEARCH_URL = os.getenv("ELASTICSEARCH_URL", "http://elasticsearch:9200")
 
@@ -42,23 +44,24 @@ client = OpenAI(
 
 # System prompt for the medical assistant
 SYSTEM_PROMPT = """You are a medical assistant for Doctomed.ch. Be realistic and natural. Follow these rules strictly:
-
 - DONOT provide medical diagnosis.
 - Guide the patient effectively and concisely if asked for some specific symtoms, or any health related issue.
 - DONOT give doctor recommendations from other websites
 - Include the JSON block and the recommendation message ONLY when 'questioning_complete' is true.
-- MUST return JSON for any specialist type mentioned, even if the user just types a specialist name
 
 1. Direct Requests (when users ask something to find/recommend/search doctors):
 - Extract: 
 ```json
 {
-  "specialist_type": "most appropriate specialist type",
+  "specialist_type": "string",
+  "city": "string or null",
+  "country": "string or null",
+  "language": "string or null",
   "telehealth_appropriate": true/false,
   "urgent": true/false,
-  "questioning_complete": true
+  "questioning_complete": true/false
 }
-
+- if country, city and telehealth_appropriate isnt mention just keep it null and false, dont ask questions for it.
 - Maintain conversation context
 
 2. Symptom Analysis:
@@ -69,17 +72,24 @@ SYSTEM_PROMPT = """You are a medical assistant for Doctomed.ch. Be realistic and
 ```json
 {
   "symptoms": ["list", "of", "identified", "symptoms"],
-  "severity": "low/medium/high",
+  "city": "string or null",
+  "country": "string or null",
+  "language": "string or null",
   "specialist_type": "most appropriate specialist type",
   "gp_appropriate": true/false,
   "telehealth_appropriate": true/false,
+  "urgent": true/false,
   "questioning_complete": true
 }
 ```
 NOTE:
-ALWAYS include the JSON block at the end when recommending specialist_type
-Add "Here are the best {specialist_type}s recommended for you:\n\n" before returning JSON
-This JSON must be machine-parsable and should be at the END of your helpful response.
+- MUST mention country if only city is given in both cases of JSON either Direct Requests or Symptom Analysis
+- IMPORTANT: Always include the JSON block at the end when recommending a specialist. Example response:
+  Here are the best psychiatrists recommended for you:
+  ```json
+  {"specialist_type": "psychiatrist", ...}
+- Add "Here are the best {specialist_type}s recommended for you:\n\n" before returning JSON
+- This JSON must be machine-parsable and should be at the END of your helpful response.
 """
 
 
@@ -104,12 +114,17 @@ es_pool = urllib3.HTTPSConnectionPool(
     timeout=60
 )
 
+REDIS_HOST = os.environ.get('REDISHOST')
+REDIS_PASSWORD = os.environ.get('REDISPASSWORD')
+REDIS_PORT = os.environ.get('REDISPORT')
 
 redis_pool = redis.ConnectionPool(
-    host=os.getenv("REDIS_HOST", "localhost"),
-    port=6379,
+    host=REDIS_HOST,
+    port=REDIS_PORT,
+    password=REDIS_PASSWORD,
     db=0,
-    max_connections=1000
+    max_connections=1000,
+    socket_timeout=5
 )
 
 
@@ -168,6 +183,8 @@ def chatbot(request):
         user_message = data.get("message", "")
         user_country = data.get("country")
         user_city = data.get("city")
+        # user_lat = data.get("latitude")
+        # user_lng = data.get("longitude")
         preferred_language = data.get("language")
         telehealth_preference = data.get("telehealth_appropriate", False)
         patient_age = data.get("age")
@@ -240,8 +257,8 @@ def chatbot(request):
                 # Update conversation with new symptoms using Redis manager
                 dialogue = cm.update_conversation(
                     user_id=user_id,
-                    role="system",  # Or appropriate role for symptom tracking
-                    content="",  # No message content needed for symptom updates
+                    role="system",
+                    content="",
                     symptoms=symptoms
                 )
                 logger.info(f"Updated symptoms for user {user_id}: {symptoms}")
@@ -254,30 +271,56 @@ def chatbot(request):
 
                 logger.info(f"Searching for specialist type: {specialist_type}")
 
+                country = json_data.get('country') or user_country
+                city = json_data.get('city') or user_city
+
                 # Find doctors
                 specialists = find_doctors_with_elasticsearch(
-                    specialist_type,
-                    country=user_country,
-                    city=user_city,
-                    language=preferred_language,
-                    telehealth_required=telehealth_preference
+                    specialist_type=json_data.get('specialist_type'),
+                    country=country,
+                    city=city,
+                    language=json_data.get('language'),
+                    telehealth_required=json_data.get('telehealth_appropriate', False)
                 )
 
-
                 logger.info(f"Found specialists: {len(specialists) if specialists else 0}")
+
+                if not specialists:
+                    specialists = find_doctors_with_elasticsearch(
+                        specialist_type=json_data.get('specialist_type'),
+                        country=None,
+                        city=None,
+                        language=json_data.get('language'),
+                        telehealth_required=json_data.get('telehealth_appropriate', False)
+                    )
 
                 # If no specialists found and GP is appropriate, try finding GPs
                 gp_fallback_used = False
                 if not specialists and json_data.get("gp_appropriate", True):
                     logger.info("No specialists found, searching for GPs")
                     gp_fallback_used = True
-                    specialists = find_doctors_with_elasticsearch(
+
+                    gp_country = json_data.get('country') or user_country
+                    gp_city = json_data.get('city') or user_city
+
+                    gp_specialists = find_doctors_with_elasticsearch(
                         "General Practitioner",
-                        country=user_country,
-                        city=user_city,
-                        language=preferred_language,
-                        telehealth_required=telehealth_required
+                        country=gp_country,
+                        city=gp_city,
+                        language=json_data.get('language'),
+                        telehealth_required=json_data.get('telehealth_appropriate', False)
                     )
+
+                    if not gp_specialists:
+                        gp_specialists = find_doctors_with_elasticsearch(
+                            "General Practitioner",
+                            country=None,
+                            city=None,
+                            language=json_data.get('language'),
+                            telehealth_required=json_data.get('telehealth_appropriate', False)
+                        )
+
+                    specialists = gp_specialists
 
                 # Modify response message if we used GP fallback
                 if gp_fallback_used:
@@ -346,38 +389,66 @@ def remove_json_from_reply(bot_reply):
 
 
 def extract_json_from_response(response):
-    """Robust JSON extraction with multiple fallbacks"""
+    """More robust JSON extraction that handles incomplete responses"""
     try:
         if not response:
             return None
 
+        # Look for specific patterns that indicate specialist search
+        specialist_search_patterns = [
+            "Here are the best", "recommended for you", "specialist"
+        ]
+
+        is_specialist_search = any(pattern in response for pattern in specialist_search_patterns)
+
+        # Try to find JSON in code blocks
         json_str = None
-        # Try to find JSON in code blocks first
         if "```json" in response:
             json_str = response.split("```json")[1].split("```")[0].strip()
         elif "```" in response:
-            # Check all code blocks for JSON
             parts = response.split("```")
-            for part in parts[1::2]:  # Check every code block
-                if part.strip().startswith('{'):
-                    json_str = part.strip()
+            for part in parts[1::2]:
+                stripped = part.strip()
+                if stripped.startswith('{'):
+                    json_str = stripped
                     break
 
-        # If no code blocks, look for JSON-like structures
+        # If no JSON found but this appears to be a specialist search, create default JSON
+        if not json_str and is_specialist_search:
+            # Extract specialist type from the response text
+            specialist_type = None
+            if "best" in response:
+                text_after_best = response.split("best")[1].strip()
+                # Take first word after "best" as specialist type
+                if text_after_best:
+                    specialist_type = text_after_best.split()[0].rstrip('s:,.')
+
+            if specialist_type:
+                return {
+                    "specialist_type": specialist_type,
+                    "city": None,
+                    "country": None,
+                    "telehealth_appropriate": False,
+                    "urgent": False,
+                    "questioning_complete": True
+                }
+
+        # If still no JSON found, scan the entire response for valid JSON
         if not json_str:
-            start = response.find('{')
-            end = response.rfind('}')
-            if start != -1 and end != -1 and start < end:
-                json_str = response[start:end+1].strip()
+            decoder = json.JSONDecoder()
+            idx = 0
+            while idx < len(response):
+                try:
+                    obj, idx = decoder.raw_decode(response[idx:])
+                    return obj
+                except json.JSONDecodeError:
+                    idx += 1
+            return None
 
-        if json_str:
-            return json.loads(json_str)
-        return None
-
+        return json.loads(json_str)
     except Exception as e:
         logger.warning(f"JSON extraction failed: {str(e)}")
         return None
-
 
 def create_default_json_response():
     """Create a default JSON response when extraction fails"""
@@ -425,7 +496,11 @@ def optimize_es_query():
 def build_elasticsearch_query(specialist_type, country=None, city=None,
                               language=None, telehealth_required=False):
     """Build Elasticsearch query with improved specialty matching"""
-    bool_query = {"must": []}
+    bool_query = {
+        "must": [],
+        "should": [],  # Add this line to initialize 'should'
+        "filter": []
+    }
 
     # Specialty filter with improved handling for neurologists
     specialist_type_lower = specialist_type.lower()
@@ -435,7 +510,7 @@ def build_elasticsearch_query(specialist_type, country=None, city=None,
                 "path": "specialties",
                 "query": {
                     "bool": {
-                        "should": [  # Match ANY of these
+                        "should": [
                             {"term": {"specialties.name.exact": "general practitioner"}},
                             {"term": {"specialties.name.exact": "general practitioner (gp)"}},
                             {"term": {"specialties.name.exact": "general internal medicine"}}
@@ -457,7 +532,7 @@ def build_elasticsearch_query(specialist_type, country=None, city=None,
                     "multi_match": {
                         "query": specialist_type_clean,
                         "fields": [
-                            "specialties.name.exact^10",  # Match nested field
+                            "specialties.name.exact^10",
                             "specialties.name^5",
                             "specialties.name.edge_ngram^3"
                         ],
@@ -472,49 +547,77 @@ def build_elasticsearch_query(specialist_type, country=None, city=None,
 
     # Location filter
     if country:
-        bool_query["must"].append({
-            "bool": {  # Wrap in a bool query
-                "should": [
-                    {"term": {"country.name.exact": {"value": country.lower(), "boost": 3}}},
-                    {"match": {"country.name": {"query": country, "fuzziness": 2, "boost": 1}}}
-                ],
-                "minimum_should_match": 1  # Ensure at least one condition matches
-            }
-        })
-
-    # City filter (fuzzy match)
-    if city:
-        bool_query["must"].append({
-            "match": {
-                "city.name": {
-                    "query": city,
-                    "fuzziness": "AUTO"
-                }
-            }
-        })
-
-    # Language filter
-    if language:
-        language_query = {
-            "match": {
-                "languages": {
-                    "query": language.lower(),
-                    "boost": 2.0,  # Increase relevance
-                    "fuzziness": "AUTO",  # Allow small typos
-                    "operator": "or",  # Match any word
-                    "minimum_should_match": "30%"  # At least 30% of words should match
+        clean_country = country.strip().lower()
+        country_query = {
+            "nested": {
+                "path": "country",
+                "query": {
+                    "bool": {
+                        "should": [
+                            {"term": {"country.name.exact": {"value": clean_country, "boost": 3}}},
+                            {"match": {"country.name": {"query": clean_country, "fuzziness": 2, "boost": 1}}}
+                        ]
+                    }
                 }
             }
         }
+        bool_query["must"].append(country_query)
+        logger.info(f"Added country filter: {clean_country}")
 
+    if city:
+        clean_city = city.strip().lower()
+        city_query = {
+            "nested": {
+                "path": "city",
+                "query": {
+                    "bool": {
+                        "should": [
+                            {"term": {"city.name.exact": {"value": clean_city, "boost": 3}}},
+                            {"match": {"city.name": {"query": clean_city, "fuzziness": "AUTO", "boost": 1}}}
+                        ]
+                    }
+                }
+            }
+        }
+        bool_query["must"].append(city_query)
+        logger.info(f"Added city filter: {clean_city}")
+
+        # Language filter
+    if language:
+        clean_lang = language.strip().lower()
+        # Use the 'exact' subfield for language
+        language_query = {
+            "term": {"languages.exact": clean_lang}
+        }
         bool_query["must"].append(language_query)
+        logger.info(f"Added language filter: {clean_lang}")
 
     # Telehealth filter
-    # if telehealth_required:
-    #     bool_query["must"].append({"term": {"is_online": "1"}})
+    if telehealth_required is True:
+        # Hard filter: only show doctors offering telehealth
+        bool_query["must"].append({
+            "term": {"is_online": True}
+        })
+    else:
+        # Soft boost: prefer but don't require
+        bool_query["should"].append({
+            "term": {
+                "is_online": {
+                    "value": True,
+                    "boost": 1.5
+                }
+            }
+        })
 
-    # Accepting new patients
-    # bool_query["must"].append({"term": {"patient_status": "1"}})
+    # Patient status: always boost, but not filter
+    bool_query["should"].append({
+        "term": {
+            "patient_status": {
+                "value": "1",
+                "boost": 2.0
+            }
+        }
+    })
 
     return bool_query
 
@@ -542,7 +645,8 @@ def find_doctors_with_elasticsearch(specialist_type, country=None, city=None,
 
         # Execute the search with appropriate sorting
         response = search.query({"bool": bool_query}) \
-                       .sort({'average_rating': {'order': 'desc'}})[:8].execute()
+                       .sort('_score', {'average_rating': {'order': 'desc'}}) \
+            [:8].execute()
 
         doctors = [hit.to_dict() for hit in response]
 
@@ -637,9 +741,12 @@ def format_doctor_recommendations(doctors, is_urgent, telehealth_appropriate):
         if doctor.get('fees'):
             result += f"\n   Consultation Fees: {doctor['fees']}"
 
+        if doctor.get('patient_status') == '1':
+            doctor['tags'] = ['Accepting Patients']
 
         if doctor.get('web_url'):
             result += f"\n   Website: {doctor['web_url']}"
+
 
         result += "\n\n"
     if telehealth_appropriate:
@@ -802,47 +909,81 @@ def create_default_specialist_response():
 # Add new function to create Elasticsearch index
 @csrf_exempt
 def initialize_elasticsearch(request):
-    """Initialize Elasticsearch index with current data"""
+    """Improved Elasticsearch initialization with resume capability"""
     if request.method != "POST":
         return JsonResponse({"error": "Invalid method"}, status=405)
 
     try:
-        # Create the index
         from elasticsearch_dsl.connections import connections
         es = connections.get_connection()
 
-        # Recreate the index
-        UserDocument._index.delete(ignore=404)
-        UserDocument.init()
+        # Check existing index
+        existing_count = UserDocument.search().count()
 
-        # Index the data in batches for better performance
-        users = User.objects.all()
-        batch_size = 100
+        # Resume logic
+        search_results = UserDocument.search().sort('-id')[:1].execute()
+        if search_results:
+            last_indexed = int(search_results[0].meta.id)
+            users = User.objects.filter(id__gt=last_indexed)
+            logger.info(f"Resuming indexing from ID {last_indexed}")
+        else:
+            users = User.objects.all()
         total_count = users.count()
-        processed_count = 0
 
-        for i in range(0, total_count, batch_size):
-            batch = users[i:i + batch_size]
-            bulk_actions = []
+        # Optimized batch processing
+        batch_size = 200  # Reduced from 500
+        retry_count = 0
+        max_retries = 3
+        success = False
 
-            for user in batch:
-                doc = UserDocument()
-                doc.prepare(user)
-                bulk_actions.append(doc.to_dict(include_meta=True))
+        while not success and retry_count < max_retries:
+            try:
+                with transaction.atomic():
+                    for i in range(0, total_count, batch_size):
+                        batch = users[i:i + batch_size].iterator(chunk_size=100)
+                        bulk_actions = []
 
-            if bulk_actions:
-                UserDocument._index.bulk(bulk_actions)
+                        for user in batch:
+                            try:
+                                doc = UserDocument()
+                                doc.meta.id = user.id
+                                doc.prepare(user)
+                                bulk_actions.append(doc.to_dict(include_meta=True))
+                            except Exception as e:
+                                logger.error(f"Skipping user {user.id}: {str(e)}")
+                                continue
 
-            processed_count += len(batch)
-            logger.info(f"Indexed {processed_count}/{total_count} doctors")
+                        if bulk_actions:
+                            # Use the bulk function from elasticsearch.helpers to perform bulk indexing
+                            success, failed = bulk(es, bulk_actions)
+                            if success:
+                                logger.info(f"Successfully indexed {len(bulk_actions)} documents")
+                            else:
+                                logger.error(f"Failed to index some documents: {failed}")
+                            time.sleep(0.1)
+
+                        logger.info(f"Indexed {min(i+batch_size, total_count)}/{total_count} doctors")
+
+                        # Keep connection alive
+                        User.objects.first().pk  # Simple query to maintain connection
+
+                success = True
+
+            except (OperationalError, ConnectionError) as e:
+                retry_count += 1
+                logger.warning(f"Batch failed (attempt {retry_count}): {str(e)}")
+                time.sleep(2 ** retry_count)
 
         return JsonResponse({
             "status": "success",
-            "message": f"Indexed {processed_count} doctors successfully."
+            "message": f"Indexed {total_count} doctors successfully."
         })
 
     except Exception as e:
-        logger.error(f"Elasticsearch indexing error: {str(e)}", exc_info=True)
-        import traceback
-        traceback.print_exc()
+        logger.error(f"Indexing error: {str(e)}", exc_info=True)
         return JsonResponse({"error": str(e)}, status=500)
+
+def chunks(lst, n):
+    """Yield successive n-sized chunks from lst."""
+    for i in range(0, len(lst), n):
+        yield lst[i:i + n]

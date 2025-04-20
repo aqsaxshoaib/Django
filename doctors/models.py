@@ -206,6 +206,34 @@ class User(models.Model):
         """Store Language objects as comma-separated IDs"""
         self.language_ids = ','.join(str(lang.id) for lang in language_objs)
 
+    @property
+    def coordinates(self):
+        """Get coordinates as numeric values if available"""
+        try:
+            return (float(self.latitude), float(self.longitude))
+        except (TypeError, ValueError):
+            return None
+
+    def valid_geo_location(self):
+        """Check if user has valid geo coordinates"""
+        return self.coordinates and all(
+            -90 <= self.coordinates[0] <= 90,
+            -180 <= self.coordinates[1] <= 180
+        )
+
+    def clean_country(self):
+        """Get normalized country name"""
+        if self.country:
+            return self.country.name.strip().lower()
+        return None
+
+    def clean_city(self):
+        """Get normalized city name"""
+        if self.city:
+            return self.city.name.strip().lower()
+        return None
+
+
     class Meta:
         db_table = 'users'  # Ensures the table name matches the original SQL schema
         verbose_name = 'User'

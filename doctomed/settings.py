@@ -51,27 +51,36 @@ from django_elasticsearch_dsl.signals import RealTimeSignalProcessor
 ELASTICSEARCH_DSL_SIGNAL_PROCESSOR = 'django_elasticsearch_dsl.signals.RealTimeSignalProcessor'
 
 
-ELASTICSEARCH_HOST = {
-    "default": {
-        "hosts": ["http://elasticsearch:9200"],
-        "verify_certs":False,
-    },
+ELASTICSEARCH_DSL = {
+    'default': {
+        'hosts': [os.environ.get("ELASTIC_CLOUD_URL")],
+        'verify_certs': True,
+        'max_retries': 5,
+    }
 }
 
-ELASTICSEARCH_DSL = {
+REDIS_HOST = os.environ.get('REDISHOST')
+REDIS_PASSWORD = os.environ.get('REDISPASSWORD')
+REDIS_PORT = os.environ.get('REDISPORT')
+CACHES = {
     "default": {
-        "hosts": ["http://elasticsearch:9200"],
-        "verify_certs":False,
-    },
+        "BACKEND": "django_redis.cache.RedisCache",
+        "LOCATION": f"redis://{REDIS_HOST}:{REDIS_PORT}/1",
+        "OPTIONS": {
+            "CLIENT_CLASS": "django_redis.client.DefaultClient",
+            "PASSWORD": REDIS_PASSWORD,
+            "SOCKET_TIMEOUT": 5,
+        }
+    }
 }
 
 
 # CORS Settings
 CORS_ALLOW_ALL_ORIGINS = True  # For development only
-
+CORS_ALLOW_CREDENTIALS = True
 # For production, use:
 # CORS_ALLOWED_ORIGINS = [
-#     "https://yourdomain.com",
+#     "https://5376-154-192-156-75.ngrok-free.app",
 # ]
 CORS_ALLOW_METHODS = [
     "GET",
@@ -88,6 +97,8 @@ CORS_ALLOW_HEADERS = [
     "user-agent",
     "x-csrftoken",
     "x-requested-with",
+    "x-xsrf-token",
+    "x-session-token",
 ]
 
 MIDDLEWARE = [
@@ -135,8 +146,12 @@ DATABASES = {
         'HOST': os.environ.get('MYSQLHOST'),
         'PORT': os.environ.get('MYSQLPORT', '3306'),
         'OPTIONS': {
-            'init_command': "SET sql_mode='STRICT_TRANS_TABLES'",
-            'connect_timeout': 30,
+            'init_command': """
+                 SET SESSION wait_timeout=86400;
+                 SET SESSION interactive_timeout=86400;
+                 SET sql_mode='STRICT_TRANS_TABLES';
+             """,
+            'connect_timeout': 60,
             'read_timeout': 300,
             'write_timeout': 300,
             'charset': 'utf8mb4',
