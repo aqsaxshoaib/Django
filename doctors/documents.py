@@ -20,19 +20,6 @@ class UserDocument(Document):
         ),
     })
 
-    def prepare_languages(self, instance):
-        """Convert to list of lowercase language names"""
-        try:
-            return [lang.name.lower() for lang in instance.languages.all()]
-        except (AttributeError, ObjectDoesNotExist):
-            return []
-
-    def prepare_is_online(self, instance):
-        """Convert char field to boolean"""
-        return instance.is_online == '1'
-
-
-
     languages = dsl_fields.KeywordField(
         fields={
             'exact': dsl_fields.KeywordField(normalizer='lowercase_normalizer'),
@@ -54,12 +41,12 @@ class UserDocument(Document):
     city = dsl_fields.NestedField(
         properties={
             'name': dsl_fields.TextField(
-            fields={
-                'exact': dsl_fields.KeywordField(normalizer='lowercase_normalizer'),
-                'edge_ngram': dsl_fields.TextField(analyzer='edge_ngram_analyzer')
-            }),
+                fields={
+                    'exact': dsl_fields.KeywordField(normalizer='lowercase_normalizer'),
+                    'edge_ngram': dsl_fields.TextField(analyzer='edge_ngram_analyzer')
+                }),
             'canton': dsl_fields.ObjectField(properties={
-            'name': dsl_fields.TextField(),
+                'name': dsl_fields.TextField(),
             })
         }
     )
@@ -95,14 +82,31 @@ class UserDocument(Document):
 
     healthcare_professional_info = dsl_fields.TextField()
 
+    def prepare_languages(self, instance):
+        """Convert to list of lowercase language names"""
+        try:
+            return [lang.name.lower() for lang in instance.languages.all()]
+        except (AttributeError, ObjectDoesNotExist):
+            return []
 
+    def prepare_is_online(self, instance):
+        """Convert char field to boolean"""
+        return instance.is_online == '1'
+
+    def prepare_location(self, instance):
+        """Handle invalid geo coordinates"""
+        try:
+            return {
+                "lat": float(instance.latitude or 0),
+                "lon": float(instance.longitude or 0)
+            }
+        except (TypeError, ValueError):
+            return None
 
     def prepare(self, instance):
         """Safe document preparation with error handling"""
         try:
             data = super().prepare(instance)
-
-            # Handle location separately
             try:
                 data['location'] = self.prepare_location(instance)
             except (ValueError, TypeError) as e:
@@ -120,22 +124,12 @@ class UserDocument(Document):
             "rating": review.rating,
             "comments": review.comments,
             "status": review.status
-        } for review in instance.review_set.all()]  # Use correct reverse relation
+        } for review in instance.review_set.all()]
 
     def prepare_average_rating(self, instance):
         """Calculate average rating from all reviews"""
         ratings = [r.rating for r in instance.review_set.all() if r.rating is not None]
         return round(sum(ratings) / len(ratings), 2) if ratings else 0.0
-
-    def prepare_location(self, instance):
-        """Handle invalid geo coordinates"""
-        try:
-            return {
-                "lat": float(instance.latitude or 0),
-                "lon": float(instance.longitude or 0)
-            }
-        except (TypeError, ValueError):
-            return None
 
     def prepare_Speaking_Languages(self, instance):
         """
@@ -144,8 +138,6 @@ class UserDocument(Document):
         """
         if not instance.Speaking_Languages:
             return []
-
-        # Strip whitespace and filter out empty strings
         return [lang.strip() for lang in instance.Speaking_Languages.split(',') if lang.strip()]
 
     def prepare_specialties(self, instance):
@@ -267,5 +259,5 @@ class UserDocument(Document):
 
         # Index documents in smaller chunks
         client = connections.get_connection()
-        actions = [self.to_dict() for self in Doctor.objects.all()]
+        actions = [self.to_dict() for self in User.objects.all()]
         bulk(client, actions, chunk_size=500)

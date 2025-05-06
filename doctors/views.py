@@ -10,15 +10,20 @@ from django.views.decorators.csrf import csrf_exempt
 from django.db.models import Q
 from elasticsearch.exceptions import ConnectionError
 from dotenv import load_dotenv
-from .models import User
+from .models import *
 from .serializers import UserSerializer
 from .documents import UserDocument
 from django_ratelimit.decorators import ratelimit
 from django.db import OperationalError, transaction
 from elasticsearch.helpers import bulk
 from circuitbreaker import circuit
+from .laravel_encryption import encrypt_laravel_style
+from json import JSONDecodeError
+from django.core.cache import cache
 import logging
 import time
+import msgpack
+
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -27,29 +32,52 @@ logger = logging.getLogger(__name__)
 load_dotenv()
 
 # Check for required environment variables
-OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+INFOMANIAK_API_KEY = os.getenv("INFOMANIAK_API_KEY")
 
-if not OPENROUTER_API_KEY or not OPENROUTER_API_KEY.startswith('sk-or-v1-'):
-    logger.error("Invalid OpenRouter API key format")
-    raise EnvironmentError("Invalid OpenRouter API key format")
+if not INFOMANIAK_API_KEY:
+    logger.error("API key is missing")
+    raise EnvironmentError("Invalid INFOMANIAK_API_KEY API key")
 
 ELASTICSEARCH_URL = os.getenv("ELASTICSEARCH_URL", "http://elasticsearch:9200")
 
 # Initialize OpenAI client
 client = OpenAI(
-    base_url="https://openrouter.ai/api/v1",
-    api_key=OPENROUTER_API_KEY,
+    base_url="https://api.infomaniak.com/1/ai/104209/openai",
+    api_key=INFOMANIAK_API_KEY,
+    timeout=15.0,
 )
 
 
 # System prompt for the medical assistant
-SYSTEM_PROMPT = """You are a medical assistant for Doctomed.ch. Be realistic and natural. Follow these rules strictly:
-- DONOT provide medical diagnosis.
-- Guide the patient effectively and concisely if asked for some specific symtoms, or any health related issue.
-- DONOT give doctor recommendations from other websites
-- Include the JSON block and the recommendation message ONLY when 'questioning_complete' is true.
+SYSTEM_PROMPT = """You are an AI medical assistant for Doctomed.ch, operating under Swiss healthcare regulations (FADP/GDPR). Follow these rules strictly:
 
-1. Direct Requests (when users ask something to find/recommend/search doctors):
+Role & Compliance:
+1. Maintain HIPAA-level data privacy for all interactions
+2. Adhere to SwissMedic guidelines for healthcare recommendations.
+3. If asked about anything unrelated to the medical field, dont answer that just tell that what you can do for them.
+
+
+Strict Location Handling Rules:
+1. If user asks about their location/city/country/address:
+   - IMMEDIATELY respond with: "Your registered location is {patient_city}, {patient_country}"
+   - NEVER ask for location confirmation, When {patient_city}, {patient_country} are available
+     
+Location Data Sources:
+   - Always use patient_city from: {patient_city}
+   - Always use patient_country from: {patient_country}
+   
+
+3. If no location exists:
+   - Respond: "No location registered. Please update your profile first." 
+
+Strict Prohibitions:
+- NEVER provide medical diagnosis or possible causes
+- NEVER list medical tests or treatment options
+- NEVER explain symptoms or conditions
+- ALWAYS RETURN RESPONSES AS TEXT, NEVER USE NUMERIC CODES
+
+Structured Data Extraction (if given by user):
+1. Direct Requests (when users ask something to find/recommend/search doctors or writes specialist name):
 - Extract: 
 ```json
 {
@@ -59,8 +87,9 @@ SYSTEM_PROMPT = """You are a medical assistant for Doctomed.ch. Be realistic and
   "language": "string or null",
   "telehealth_appropriate": true/false,
   "urgent": true/false,
-  "questioning_complete": true/false
+  "questioning_complete": true
 }
+- Always return questioning_complete true for Direct Requests.
 - if country, city and telehealth_appropriate isnt mention just keep it null and false, dont ask questions for it.
 - Maintain conversation context
 
@@ -79,13 +108,14 @@ SYSTEM_PROMPT = """You are a medical assistant for Doctomed.ch. Be realistic and
   "gp_appropriate": true/false,
   "telehealth_appropriate": true/false,
   "urgent": true/false,
-  "questioning_complete": true
+  "questioning_complete": true/false
 }
 ```
 NOTE:
+- ONLY return 'telehealth_appropriate': True, when user asks for it.
 - MUST mention country if only city is given in both cases of JSON either Direct Requests or Symptom Analysis
-- IMPORTANT: Always include the JSON block at the end when recommending a specialist. Example response:
-  Here are the best psychiatrists recommended for you:
+- IMPORTANT: Always include the JSON block (not in number form) at the end when recommending a specialist. Example response:
+- Here are the best {specialist_type}s recommended for you:\n\n"
   ```json
   {"specialist_type": "psychiatrist", ...}
 - Add "Here are the best {specialist_type}s recommended for you:\n\n" before returning JSON
@@ -93,26 +123,6 @@ NOTE:
 """
 
 
-
-def optimize_llm_call():
-    return client.chat.completions.create(
-        model="deepseek/deepseek-chat:free",
-        messages=messages,
-        temperature=0.2,
-        max_tokens=150,
-        top_p=0.9,
-        frequency_penalty=0.5,
-        presence_penalty=0.5
-    )
-import urllib3
-
-# Elasticsearch
-es_pool = urllib3.HTTPSConnectionPool(
-    host='es-cluster',
-    maxsize=100,
-    block=True,
-    timeout=60
-)
 
 REDIS_HOST = os.environ.get('REDISHOST')
 REDIS_PASSWORD = os.environ.get('REDISPASSWORD')
@@ -124,42 +134,151 @@ redis_pool = redis.ConnectionPool(
     password=REDIS_PASSWORD,
     db=0,
     max_connections=1000,
-    socket_timeout=5
+    socket_timeout=15
 )
 
 
 class ConversationManager:
     def __init__(self):
         self.redis = redis.Redis(connection_pool=redis_pool)
-        self.expiration = 86400  # 24 hours
+        self.expiration = 86400
 
-    def save_conversation(self, user_id, dialogue, symptoms):
-        """Store conversation data in Redis with proper structure"""
-        data = {
-            'dialogue': dialogue,
-            'symptoms': symptoms,
-            'updated_at': time.time()
-        }
-        self.redis.setex(f"conversation:{user_id}", self.expiration, json.dumps(data))
+    def save_conversation(self, patient_id, dialogue, symptoms):
+        key = f"conversation:{str(patient_id)}"
+        try:
+            data = msgpack.packb({
+                'dialogue': dialogue,
+                'symptoms': symptoms,
+                'updated_at': time.time()
+            })
+            self.redis.setex(key, self.expiration, data)
+        except Exception as e:
+            logger.error(f"Error saving conversation: {str(e)}")
 
-    def get_conversation(self, user_id):
-        """Retrieve complete conversation history"""
-        data = self.redis.get(f"conversation:{user_id}")
-        if data:
-            decoded = json.loads(data)
-            return decoded.get('dialogue', []), decoded.get('symptoms', [])
-        return [], []
+    def get_conversation(self, patient_id):
+        key = f"conversation:{str(patient_id)}"
+        try:
+            data = self.redis.get(key)
+            if not data:
+                return [], []
 
-    def update_conversation(self, user_id, role, content, symptoms=None):
+            # First try msgpack
+            try:
+                decoded = msgpack.unpackb(data, raw=False)
+                return decoded.get('dialogue', []), decoded.get('symptoms', [])
+            except msgpack.exceptions.ExtraData:
+                # If msgpack fails, try JSON fallback
+                try:
+                    decoded = json.loads(data)
+                    return decoded.get('dialogue', []), decoded.get('symptoms', [])
+                except json.JSONDecodeError:
+                    return [], []
+
+        except Exception as e:
+            logger.error(f"Error decoding conversation data: {str(e)}")
+            return [], []
+
+    def update_conversation(self, patient_id, role, content, symptoms=None):
         """Append to existing conversation"""
-        dialogue, existing_symptoms = self.get_conversation(user_id)
+        dialogue, existing_symptoms = self.get_conversation(patient_id)
         dialogue.append({"role": role, "content": content})
 
         if symptoms is not None:
             existing_symptoms.extend(symptoms)
 
-        self.save_conversation(user_id, dialogue, existing_symptoms)
+        self.save_conversation(patient_id, dialogue, existing_symptoms)
         return dialogue
+
+    def reset_conversation(self, patient_id):
+        """Reset conversation to initial state with system prompt"""
+        logger.info(f"Executing reset_conversation for patient: {patient_id}")
+
+        system_content = SYSTEM_PROMPT
+
+        try:
+            patient_location = get_patient_location(patient_id) or {}
+            patient_city = patient_location.get('city')
+            patient_country = patient_location.get('country')
+
+            if patient_city and patient_country:
+                system_content += f"\n\nPATIENT LOCATION LOCK: {patient_city}, {patient_country}"
+                logger.info(f"Added location lock during reset: {patient_city}, {patient_country}")
+
+        except Exception as e:
+            logger.error(f"Failed to add location during reset: {str(e)}", exc_info=True)
+
+        dialogue = [{
+            "role": "system",
+            "content": system_content
+        }]
+
+        symptoms = []
+
+        self.save_conversation(patient_id, dialogue, symptoms)
+
+        new_dialogue, _ = self.get_conversation(patient_id)
+        logger.info(f"Reset complete. New dialogue length: {len(new_dialogue)}")
+
+        return dialogue
+
+    def should_reset_conversation(self, user_message: str, patient_id: str) -> bool:
+        """Use LLM to detect conversation reset intent"""
+        cache_key = f"reset_check:{hash(user_message.lower())}"
+        logger.info(f"Checking if message requires reset: '{user_message}'")
+
+        # Check cache first
+        if cached := cache.get(cache_key):
+            return cached
+
+        try:
+            # Get previous conversation context
+            dialogue, _ = self.get_conversation(patient_id)
+
+            context_messages = []
+            for msg in dialogue[-3:]:
+                if msg['role'] in ['user', 'assistant']:
+                    context_messages.append(f"{msg['role'].upper()}: {msg['content']}")
+
+            context_text = "\n".join(context_messages) if context_messages else "No previous conversation"
+
+            response = client.chat.completions.create(
+                model="llama3",
+                messages=[{
+                    "role": "system",
+                    "content": """Analyze if the user's message indicates a desire to start a completely new conversation.
+
+                    Given the PREVIOUS CONVERSATION and the NEW MESSAGE, determine if this is a topic change or reset.
+
+                    Return YES ONLY if:
+                    1. The user start talking about something completely different. 
+                    2. The user suddenly introduces a topic unrelated to the previous conversation (e.g., a new condition, different body system, different specialist).
+                    3. When user say greetings 
+
+                    Return NO if:
+                    1. The message is a follow-up to a previous question
+                    2. The message provides additional information about a medical concern
+                    3. The message continue asking  about previous doctors, specialists, or medical services
+                    4. The message is answering a question that was previously asked by the assistant
+
+                    IMPORTANT: Medical chatbots should maintain conversation context. Only reset when truly necessary.
+                    RESPOND WITH EXACTLY 'YES' OR 'NO', NOTHING ELSE."""
+                }, {
+                    "role": "user",
+                    "content": f"PREVIOUS CONVERSATION:\n{context_text}\n\nNEW MESSAGE:\n{user_message}\n\nShould the conversation be reset?"
+                }],
+                max_tokens=10,
+                timeout=10.0
+            )
+            result_text = response.choices[0].message.content.strip().upper()
+            result = result_text == "YES"
+
+            logger.info(f"LLM reset detection response: '{result_text}' → Reset: {result}")
+
+            cache.set(cache_key, result, 3600)
+            return result
+        except Exception as e:
+            logger.error(f"Error in reset detection: {str(e)}", exc_info=True)
+            return False
 
 async def handle_message(user_message):
     # Process message async
@@ -174,47 +293,107 @@ async def handle_message(user_message):
 @ratelimit(key='user', rate='100/m', block=True)
 @csrf_exempt
 def chatbot(request):
+    start_time = time.time()
     if request.method != "POST":
         return JsonResponse({"response": "Invalid request method."}, status=405)
 
+    cm = ConversationManager()
+    patient_id = None
+    dialogue = []
+    bot_reply = None
+    json_data = None
+    clean_reply = None
+    logger.info(f"Redis connection status: {cm.redis.ping()}")
+
+    # Unified patient ID handling
     try:
+        if request.user.is_authenticated:
+            patient_id = str(request.user.id)
+        else:
+            data = json.loads(request.body)
+            patient_id = str(data.get("patient_id"))
+            if not patient_id:
+                return JsonResponse({"response": "Authentication or patient_id required"}, status=401)
+    except Exception as e:
+        logger.error(f"Auth error: {str(e)}")
+        return JsonResponse({"response": "Authentication failed"}, status=401)
+
+    try:
+
+        timing = {}
+        t0 = time.time()
+
         data = json.loads(request.body)
-        user_id = data.get("user_id", "default")
+        patient_id = data.get("patient_id")
+        if not patient_id:
+            return JsonResponse({"response": "Patient ID is required."}, status=400)
         user_message = data.get("message", "")
-        user_country = data.get("country")
-        user_city = data.get("city")
-        # user_lat = data.get("latitude")
-        # user_lng = data.get("longitude")
+
+        logger.info(f"Checking reset intent for message: '{user_message}'")
+        t0 = time.time()
+        should_reset = cm.should_reset_conversation(user_message, patient_id)
+        timing['reset_check'] = time.time() - t0
+        logger.info(f"Reset decision: {should_reset}")
+
+        if should_reset:
+            logger.info(f"LLM detected reset intent: {user_message}")
+            dialogue = cm.reset_conversation(patient_id)
+        else:
+            dialogue, symptoms = cm.get_conversation(patient_id)
+
+        country = data.get("country")
+        city = data.get("city")
+        user_lat = data.get("latitude")
+        user_lng = data.get("longitude")
         preferred_language = data.get("language")
         telehealth_preference = data.get("telehealth_appropriate", False)
-        patient_age = data.get("age")
-        patient_gender = data.get("gender")
+        try:
+            t0 = time.time()
+            patient_location = get_patient_location(patient_id) or {}
+            timing['location'] = time.time() - t0
+        except Exception as e:
+            logger.error(f"Error getting location: {str(e)}")
+            patient_location = {}
 
-        cm = ConversationManager()
+        patient_city = patient_location.get('city')
+        patient_country = patient_location.get('country')
+        has_location = bool(patient_city and patient_country)
 
-        # Get or initialize conversation from Redis
-        dialogue, symptoms = cm.get_conversation(user_id)
+        dialogue, symptoms = cm.get_conversation(patient_id)
+        logger.info(f"Initial dialogue length: {len(dialogue)}")
 
         # Initialize if empty
-        if not dialogue:
+        if not dialogue or dialogue[0]['role'] != 'system':
+            logger.warning("Resetting conversation with system prompt")
             dialogue = [{"role": "system", "content": SYSTEM_PROMPT}]
             symptoms = []
-            cm.save_conversation(user_id, dialogue, symptoms)
+            cm.save_conversation(patient_id, dialogue, symptoms)
 
-        # Add user message to conversation
-        dialogue = cm.update_conversation(user_id, "user", user_message)
+            if has_location:
+                dialogue.append({
+                    "role": "system",
+                    "content": f"PATIENT LOCATION LOCK: {patient_city}, {patient_country}"
+                })
+                cm.save_conversation(patient_id, dialogue, symptoms)
+                logger.info(f"Added location information to conversation: {patient_city}, {patient_country}")
+
+        elif dialogue[0]['content'] != SYSTEM_PROMPT:
+            logger.warning("Updating system prompt to latest version")
+            dialogue[0]['content'] = SYSTEM_PROMPT
+            cm.save_conversation(patient_id, dialogue, symptoms)
+
+        dialogue = cm.update_conversation(patient_id, "user", user_message)
 
         logger.info(f"User message: {user_message}")
 
-        # Retry mechanism for API calls
-        max_retries = 3
+        max_retries = 2
         retry_count = 0
+        base_delay = 0.3
         while retry_count < max_retries:
             try:
-                # Get response from LLM
                 completion = client.chat.completions.create(
-                    model="deepseek/deepseek-chat:free",
-                    messages=dialogue
+                    model="llama3",
+                    messages=dialogue,
                 )
 
                 # Get the bot's reply
@@ -228,27 +407,37 @@ def chatbot(request):
                     return JsonResponse(
                         {"response": "Sorry, I'm having trouble connecting to the service. Please try again later."},
                         status=503)
-                time.sleep(1)  # Wait before retrying
+                delay = base_delay * (2 ** retry_count) + random.uniform(0, 0.1)
+                time.sleep(delay)
 
-        # Extract JSON data from the response
-        json_data = extract_json_from_response(bot_reply)
+        json_data = extract_json_from_response(bot_reply, dialogue)
         logger.info(f"Extracted JSON data: {json_data}")
 
-        # Create a response without JSON
         clean_reply = remove_json_from_reply(bot_reply)
 
-        # Initialize the final response
+        if patient_city and patient_country:
+            clean_reply = clean_reply.replace('{patient_city}', patient_city) \
+                .replace('{patient_country}', patient_country) \
+                .replace('{location}', f"{patient_city}, {patient_country}")
+
         final_response = clean_reply
         specialists = []
-        specialist_type = "General Practitioner"  # Default value
         symptoms_provided = False
 
+        # Ensure we always have a dictionary
+        if not isinstance(json_data, dict):
+            json_data = {}
+
         if json_data:
-            # Only include recommendations if symptoms are provided
-            symptoms = json_data.get("symptoms", [])
+            if isinstance(json_data, dict):
+                symptoms = json_data.get("symptoms", [])
+                specialist_type = str(json_data.get("specialist_type") or "").strip().lower()
+            else:
+                symptoms = []
+                specialist_type = ""
+                json_data = None
 
-            specialist_type = json_data.get("specialist_type", "General Practitioner").strip().lower()
-
+            specialist_type = str(json_data.get("specialist_type") or "").strip().lower()
             original_specialist_type = specialist_type
 
             symptoms_provided = bool(symptoms)
@@ -256,12 +445,12 @@ def chatbot(request):
             if symptoms:
                 # Update conversation with new symptoms using Redis manager
                 dialogue = cm.update_conversation(
-                    user_id=user_id,
+                    patient_id=patient_id,
                     role="system",
-                    content="",
+                    content=SYSTEM_PROMPT,
                     symptoms=symptoms
                 )
-                logger.info(f"Updated symptoms for user {user_id}: {symptoms}")
+                logger.info(f"Updated symptoms for user {patient_id}: {symptoms}")
 
 
             if specialist_type:
@@ -271,84 +460,181 @@ def chatbot(request):
 
                 logger.info(f"Searching for specialist type: {specialist_type}")
 
-                country = json_data.get('country') or user_country
-                city = json_data.get('city') or user_city
+                country = json_data.get('country')
+                city = json_data.get('city')
 
+                location_source = "database" if patient_location else "user input"
+                logger.info(f"Patient location - Valid: {bool(patient_city and patient_country)} City={patient_city or 'None'}, Country={patient_country or 'None'}")
+
+                placeholders = {
+                    '{database_city}': patient_city or '',
+                    '[database_city]': patient_city or '',
+                    '{database_country}': patient_country or '',
+                    '[database_country]': patient_country or ''
+                }
+
+                def replace_placeholders(obj):
+                    if isinstance(obj, dict):
+                        for key, value in obj.items():
+                            if isinstance(value, str):
+                                for ph, real in placeholders.items():
+                                    safe_real = str(real) if real is not None else ''
+                                    value = value.replace(ph, safe_real)
+                                obj[key] = value
+                            elif isinstance(value, (dict, list)):
+                                replace_placeholders(value)
+                    elif isinstance(obj, list):
+                        for i, item in enumerate(obj):
+                            if isinstance(item, str):
+                                for ph, real in placeholders.items():
+                                    safe_real = str(real) if real is not None else ''
+                                    item = item.replace(ph, safe_real)
+                                obj[i] = item
+                            elif isinstance(item, (dict, list)):
+                                replace_placeholders(item)
+
+                replace_placeholders(json_data)
+
+                # Handle city replacement
+                json_city = json_data.get('city', '')
+                if json_city in placeholders:
+                    json_data['city'] = placeholders[json_city]
+                elif not json_city:
+                    json_data['city'] = patient_city
+
+
+                # Handle country replacement
+                json_country = json_data.get('country', '')
+                if json_country in placeholders:
+                    json_data['country'] = placeholders[json_country]
+                elif not json_country:
+                    json_data['country'] = patient_country
+
+
+                if json_data.get('city') in ('[database_city]', '{database_city}') and patient_city:
+                    json_data['city'] = patient_city
+                    logger.info(f"Replaced city placeholder with: {patient_city}")
+
+                if json_data.get('country') in ('[database_country]', '{database_country}') and patient_country:
+                    json_data['country'] = patient_country
+                    logger.info(f"Replaced country placeholder with: {patient_country}")
+
+                if not json_data.get('city') in ('[database_city]', '{database_city}') and not patient_city:
+                    json_data['city'] = city
+                if not json_data.get('country') in ('[database_country]', '{database_country}') and not patient_country:
+                    json_data['country'] = country
+                # Replace the current 'near me' handling with:
+                if "near me" in user_message.lower():
+                    json_data.update({
+                        'city': patient_city,
+                        'country': patient_country,
+                        'use_db_location': True
+                    })
+                    # Use database location instead of null
+                    json_data['city'] = patient_city
+                    json_data['country'] = patient_country
+                    logger.info("Using database location for 'near me' request")
+
+
+                    logger.info("Resetting location for 'near me' request")
+                    logger.info(f"Final search location - City: {city or 'None'} "
+                        f"(Source: {'user input' if json_data.get('city') else 'patient record'}), "
+                        f"Country: {country or 'None'} "
+                        f"(Source: {'user input' if json_data.get('country') else 'patient record'})")
+
+                    # Specialist search logging
+                logger.info(f"Initiating specialist search with parameters: "
+                                f"Type={specialist_type}, City={city}, Country={country}, "
+                                f"Telehealth={telehealth_required}")
+
+                user_provided_location = (json_data.get('city') is not None) or (json_data.get('country') is not None)
+
+                # First search parameters
+                search_country = json_data.get('country')
+                search_city = json_data.get('city')
+
+                # If no user-provided location parameters, first try patient location
+                if not user_provided_location:
+                    logger.info("No user-provided location - using patient location for initial search")
+                    search_country = patient_country
+                    search_city = patient_city
                 # Find doctors
                 specialists = find_doctors_with_elasticsearch(
                     specialist_type=json_data.get('specialist_type'),
-                    country=country,
-                    city=city,
+                    country=search_country,
+                    city=search_city,
                     language=json_data.get('language'),
-                    telehealth_required=json_data.get('telehealth_appropriate', False)
+                    telehealth_required=json_data.get('telehealth_appropriate', False),
+                    patient_city=patient_city,
+                    patient_country=patient_country
                 )
 
                 logger.info(f"Found specialists: {len(specialists) if specialists else 0}")
 
-                if not specialists:
+                if not specialists and not user_provided_location:
+                    logger.info("Attempting locationless search since user didn't specify location")
                     specialists = find_doctors_with_elasticsearch(
                         specialist_type=json_data.get('specialist_type'),
                         country=None,
                         city=None,
                         language=json_data.get('language'),
-                        telehealth_required=json_data.get('telehealth_appropriate', False)
+                        telehealth_required=json_data.get('telehealth_appropriate', False),
+                        patient_city=None,
+                        patient_country=None
+                    )
+                    logger.info(f"Found specialists in locationless search: {len(specialists) if specialists else 0}")
+
+                if not specialists:
+                    # Instead of using a default response, ask the LLM to generate a contextual response
+                    no_specialists_prompt = (
+                        f"We couldn't find any {original_specialist_type}s available on our website based on the user's criteria. "
+                        f"Please provide a polite and very concise response that acknowledges this and maintains the conversation context. "
+                        f"Dont use 'search' word"
                     )
 
-                # If no specialists found and GP is appropriate, try finding GPs
-                gp_fallback_used = False
-                if not specialists and json_data.get("gp_appropriate", True):
-                    logger.info("No specialists found, searching for GPs")
-                    gp_fallback_used = True
+                    try:
+                        # Create a new, minimal dialogue for this request instead of appending to existing dialogue
+                        no_specialists_dialogue = [
+                            {"role": "system", "content": SYSTEM_PROMPT},
+                            {"role": "user", "content": user_message},
+                            {"role": "system", "content": no_specialists_prompt}
+                        ]
 
-                    gp_country = json_data.get('country') or user_country
-                    gp_city = json_data.get('city') or user_city
+                        # Add better logging before the API call
+                        logger.info(
+                            f"Attempting to generate no specialists response with dialogue: {no_specialists_dialogue}")
 
-                    gp_specialists = find_doctors_with_elasticsearch(
-                        "General Practitioner",
-                        country=gp_country,
-                        city=gp_city,
-                        language=json_data.get('language'),
-                        telehealth_required=json_data.get('telehealth_appropriate', False)
-                    )
-
-                    if not gp_specialists:
-                        gp_specialists = find_doctors_with_elasticsearch(
-                            "General Practitioner",
-                            country=None,
-                            city=None,
-                            language=json_data.get('language'),
-                            telehealth_required=json_data.get('telehealth_appropriate', False)
+                        no_specialists_completion = client.chat.completions.create(
+                            model="llama3",
+                            messages=no_specialists_dialogue
                         )
 
-                    specialists = gp_specialists
+                        clean_reply = no_specialists_completion.choices[0].message.content
+                        # Remove any JSON that might be in the response
+                        clean_reply = remove_json_from_reply(clean_reply)
+                        logger.info(f"Successfully generated no specialists response: {clean_reply}")
+                    except Exception as e:
+                        # Improved error logging
+                        logger.error(f"Failed to generate no specialists response: {str(e)}", exc_info=True)
+                        clean_reply = f"I couldn't find any {original_specialist_type}s  available in our website matching your criteria."
 
-                # Modify response message if we used GP fallback
-                if gp_fallback_used:
-                    if specialists:
-                        clean_reply = f"We couldn't find any {original_specialist_type}s matching your criteria. Recommending best general practitioner for initial assessment:"
-                    else:
-                        clean_reply = f"We couldn't find any {original_specialist_type}s or General Practitioners matching your criteria. Please try a different search."
-
-
-        # Add the bot's reply to the conversation history using Redis
-        dialogue = cm.update_conversation(user_id, "assistant", final_response)
+        dialogue = cm.update_conversation(patient_id, "assistant", final_response)
 
         # Count user messages from Redis-managed conversation
-        _, current_symptoms = cm.get_conversation(user_id)
+        _, current_symptoms = cm.get_conversation(patient_id)
         symptoms_count = len(current_symptoms)
         symptoms_provided = bool(json_data and json_data.get("symptoms"))
 
-        # Enforce minimum of 2 symptom interactions
         if symptoms_provided and symptoms_count < 2:
             if json_data:
                 json_data["questioning_complete"] = False
                 logger.info(f"Delaying recommendations - only {symptoms_count} symptom interactions")
-            specialists = []  # Clear any specialists to prevent early recommendations
+            specialists = []
 
-        # Later, when preparing the response:
         response_data = {
             "response": clean_reply,
-            "recommendations": None
+            "recommendations": None,
+            "timing": timing
         }
 
         if (json_data and specialists and (json_data.get("questioning_complete", False)) and
@@ -364,11 +650,20 @@ def chatbot(request):
         return JsonResponse(response_data)
 
     except json.JSONDecodeError:
-        return JsonResponse({"response": "Invalid JSON in request body."}, status=400)
+        return JsonResponse({"response": "Invalid JSON"}, status=400)
+
     except Exception as e:
         logger.error(f"Error in chatbot endpoint: {str(e)}", exc_info=True)
         return JsonResponse({"response": "I encountered an error processing your request. Please try again."},
                             status=500)
+    finally:
+        for var in [dialogue, bot_reply, json_data, clean_reply, cm]:
+            if var is not None:
+                del var
+
+        import gc
+        gc.collect()
+
 
 def remove_json_from_reply(bot_reply):
     """Remove JSON sections from the bot reply to create a clean response"""
@@ -385,23 +680,48 @@ def remove_json_from_reply(bot_reply):
     else:
         clean_reply = bot_reply
 
+    clean_reply = re.sub(r"(?i)placeholder\s+JSON", "", clean_reply)
+    clean_reply = re.sub(r"(?i)example\s+structure", "", clean_reply)
+
     return clean_reply
 
 
-def extract_json_from_response(response):
+def extract_json_from_response(response, dialogue_context):
     """More robust JSON extraction that handles incomplete responses"""
     try:
         if not response:
             return None
+        default_city = None
+        default_country = None
 
-        # Look for specific patterns that indicate specialist search
         specialist_search_patterns = [
             "Here are the best", "recommended for you", "specialist"
         ]
 
         is_specialist_search = any(pattern in response for pattern in specialist_search_patterns)
 
-        # Try to find JSON in code blocks
+        # Search all messages for location lock
+        for msg in reversed(dialogue_context):
+            if msg['role'] == 'system':
+                match = re.search(r'PATIENT LOCATION LOCK:\s*(.+),\s*(.+)', msg['content'])
+                if match:
+                    default_city = match.group(1).strip()
+                    default_country = match.group(2).strip()
+                    break
+
+        json_data = {}
+        if default_city and default_country:
+            json_data.setdefault('city', default_city)
+            json_data.setdefault('country', default_country)
+
+        try:
+            parsed_json = json.loads(response)
+            if isinstance(parsed_json, dict):
+                return parsed_json
+        except JSONDecodeError:
+            pass
+
+            # Try to find JSON in code blocks
         json_str = None
         if "```json" in response:
             json_str = response.split("```json")[1].split("```")[0].strip()
@@ -413,92 +733,102 @@ def extract_json_from_response(response):
                     json_str = stripped
                     break
 
-        # If no JSON found but this appears to be a specialist search, create default JSON
         if not json_str and is_specialist_search:
-            # Extract specialist type from the response text
             specialist_type = None
-            if "best" in response:
-                text_after_best = response.split("best")[1].strip()
-                # Take first word after "best" as specialist type
-                if text_after_best:
-                    specialist_type = text_after_best.split()[0].rstrip('s:,.')
+            match = re.search(r"best (\w+)s? recommended", response, re.IGNORECASE)
+            if match:
+                specialist_type = match.group(1).lower()
 
             if specialist_type:
                 return {
                     "specialist_type": specialist_type,
-                    "city": None,
-                    "country": None,
+                    "city": default_city,
+                    "country": default_country,
                     "telehealth_appropriate": False,
                     "urgent": False,
                     "questioning_complete": True
                 }
 
-        # If still no JSON found, scan the entire response for valid JSON
-        if not json_str:
-            decoder = json.JSONDecoder()
-            idx = 0
-            while idx < len(response):
-                try:
-                    obj, idx = decoder.raw_decode(response[idx:])
-                    return obj
-                except json.JSONDecodeError:
-                    idx += 1
-            return None
+                # Final JSON parsing attempt
+        if json_str:
+            try:
+                parsed = json.loads(json_str)
+                json_data.update(parsed)
+                return json_data
+            except JSONDecodeError:
+                pas
+        # Fallback: Scan entire response
+        decoder = json.JSONDecoder()
+        idx = 0
+        while idx < len(response):
+            try:
+                obj, idx = decoder.raw_decode(response[idx:])
+                json_data.update(obj)
+                return json_data
+            except JSONDecodeError:
+                idx += 1
+        return json_data or None
 
-        return json.loads(json_str)
     except Exception as e:
         logger.warning(f"JSON extraction failed: {str(e)}")
         return None
 
-def create_default_json_response():
-    """Create a default JSON response when extraction fails"""
-    return {
-        "specialist_type": "General Practitioner",
-        "severity": "medium",
-        "urgent": False,
-        "gp_appropriate": True,
-        "telehealth_appropriate": True
-    }
 
-def optimize_es_query():
-    return {
-        "query": {
-            "bool": {
-                "must": [
-                    {"term": {"speciality.raw": specialties}},
-                    {"term": {"city.raw": city}},
-                    {"range": {"average_rating": {"gte": 4}}}
-                ],
-                "should": [
-                    {"term": {"patient_status": patient_status}},
-                    {"term": {"languages": language}}
-                ]
-            }
-        },
-        "rescore": {
-            "window_size": 50,
-            "query": {
-                "rescore_query": {
-                    "score_mode": "multiply",
-                    "query_weight": 0.7,
-                    "rescore_query_weight": 1.2,
-                    "script_score": {
-                        "script": {
-                            "source": "doc['availability'].value ? 1.1 : 0.9"
-                        }
-                    }
-                }
-            }
+PATIENT_LOCATION_CACHE_TTL = 3600
+
+
+def get_patient_location(patient_id):
+    """Retrieve patient's location from database with caching"""
+    cache_key = f"patient_location:{patient_id}"
+    cached = cache.get(cache_key)
+    if cached is not None:
+        return cached
+
+    try:
+        logger.info(f"Attempting to get location for patient ID: {patient_id}")
+        if not patient_id.isdigit():
+            logger.error(f"Invalid patient ID format: {patient_id}")
+            return None
+
+        patient = Patient.objects.get(id=int(patient_id))
+        logger.info(f"Found patient {patient_id} in database")
+
+        location = {
+            'city': patient.city.name if patient.city else None,
+            'country': patient.country.name if patient.country else None
         }
-    }
+
+        cache.set(cache_key, location, PATIENT_LOCATION_CACHE_TTL)
+        return location
+
+    except Patient.DoesNotExist:
+        logger.error(f"Patient {patient_id} not found in database")
+        return None
+    except Exception as e:
+        logger.error(f"Critical error fetching patient location: {str(e)}", exc_info=True)
+        return None
 
 
 def build_elasticsearch_query(specialist_type, country=None, city=None,
-                              language=None, telehealth_required=False):
+                              language=None, telehealth_required=False,
+                              patient_city=None, patient_country=None):
     """Build Elasticsearch query with improved specialty matching"""
+
+    logger.info(f"Building query for {specialist_type} with fallback to patient location: "
+                f"Patient City={patient_city or 'None'}, Patient Country={patient_country or 'None'}")
+
+    final_city = (city if city is not None else patient_city)
+    final_country = (country if country is not None else patient_country)
+
+    # Convert to lowercase if values exist
+    final_city = final_city.lower() if final_city else None
+    final_country = final_country.lower() if final_country else None
+
+    # Add debug logging
+    logger.info(f"Final search location: {final_city}, {final_country}")
     bool_query = {
         "must": [],
-        "should": [],  # Add this line to initialize 'should'
+        "should": [],
         "filter": []
     }
 
@@ -533,10 +863,8 @@ def build_elasticsearch_query(specialist_type, country=None, city=None,
                         "query": specialist_type_clean,
                         "fields": [
                             "specialties.name.exact^10",
-                            "specialties.name^5",
-                            "specialties.name.edge_ngram^3"
                         ],
-                        "fuzziness": "AUTO",
+                        "fuzziness": 1,
                         "operator": "or",
                         "type": "best_fields"
                     }
@@ -545,44 +873,51 @@ def build_elasticsearch_query(specialist_type, country=None, city=None,
         }
         bool_query["must"].append(specialty_query)
 
-    # Location filter
-    if country:
-        clean_country = country.strip().lower()
-        country_query = {
+
+        # Country filter
+    if final_country:
+        bool_query["must"].append({
             "nested": {
                 "path": "country",
                 "query": {
                     "bool": {
                         "should": [
-                            {"term": {"country.name.exact": {"value": clean_country, "boost": 3}}},
-                            {"match": {"country.name": {"query": clean_country, "fuzziness": 2, "boost": 1}}}
+                            {"term": {"country.name.exact": final_country.lower()}},
+                            {"match": {"country.name": final_country}}
                         ]
                     }
                 }
             }
-        }
-        bool_query["must"].append(country_query)
-        logger.info(f"Added country filter: {clean_country}")
-
-    if city:
-        clean_city = city.strip().lower()
-        city_query = {
+        })
+    # City filter
+    if final_city:
+        bool_query["must"].append({
             "nested": {
                 "path": "city",
                 "query": {
                     "bool": {
                         "should": [
-                            {"term": {"city.name.exact": {"value": clean_city, "boost": 3}}},
-                            {"match": {"city.name": {"query": clean_city, "fuzziness": "AUTO", "boost": 1}}}
+                            {"term": {"city.name.exact": final_city.lower()}},
+                            {"match": {"city.name": final_city}}
                         ]
                     }
                 }
             }
-        }
-        bool_query["must"].append(city_query)
-        logger.info(f"Added city filter: {clean_city}")
+        })
+    # Boost patient's location matches
+    if patient_city and patient_city == final_city:
+        bool_query["should"].append({
+            "term": {"city.name.exact": patient_city.lower()},
+            "boost": 2.0
+        })
 
-        # Language filter
+    if patient_country and patient_country == final_country:
+        bool_query["should"].append({
+            "term": {"country.name.exact": patient_country.lower()},
+            "boost": 1.5
+        })
+
+    # Language filter
     if language:
         clean_lang = language.strip().lower()
         # Use the 'exact' subfield for language
@@ -609,66 +944,108 @@ def build_elasticsearch_query(specialist_type, country=None, city=None,
             }
         })
 
-    # Patient status: always boost, but not filter
-    bool_query["should"].append({
-        "term": {
-            "patient_status": {
-                "value": "1",
-                "boost": 2.0
-            }
-        }
-    })
-
     return bool_query
 
 
 @circuit(failure_threshold=5, recovery_timeout=60)
 def find_doctors_with_elasticsearch(specialist_type, country=None, city=None,
-                                    language=None, telehealth_required=False):
+                                    language=None, telehealth_required=False,
+                                    patient_city=None, patient_country=None):
     try:
+        # Determine final location values with fallback to patient's location
+        final_city = city or patient_city
+        final_country = country or patient_country
+
+        cache_key = f"doctors:{specialist_type}:{country}:{city}:{language}:" \
+                    f"{telehealth_required}:{patient_city}:{patient_country}"
+
+        # Try cache first
+        if cached := cache.get(cache_key):
+            logger.info(f"Cache hit for {cache_key}")
+            return cached
+
         logger.info(
-            f"Searching for doctors with: {specialist_type}, country={country}, city={city}, {language}, {telehealth_required}")
-        search = UserDocument.search()
-
-
-        # Initialize a bool query
-        bool_query = build_elasticsearch_query(
-            specialist_type,
-            country=country,
-            city=city,
-            language=language,
-            telehealth_required=telehealth_required
+            f"Searching for {specialist_type} with: "
+            f"City={city} (User) → {patient_city} (DB) → Using: {final_city} | "
+            f"Country={country} (User) → {patient_country} (DB) → Using: {final_country}"
         )
 
-        # Log the actual query being sent to Elasticsearch
-        logger.info(f"Elasticsearch query: {json.dumps(bool_query)}")
+        search = UserDocument.search()
 
-        # Execute the search with appropriate sorting
+        bool_query = build_elasticsearch_query(
+            specialist_type=specialist_type,
+            country=final_country,
+            city=final_city,
+            language=language,
+            telehealth_required=telehealth_required,
+            patient_city= patient_city,
+            patient_country=patient_country
+        )
+
+        logger.debug(f"Elasticsearch query: {json.dumps(bool_query, indent=2)}")
+
         response = search.query({"bool": bool_query}) \
                        .sort('_score', {'average_rating': {'order': 'desc'}}) \
             [:8].execute()
 
-        doctors = [hit.to_dict() for hit in response]
+        # Process results
+        doctors = []
+        for hit in response:
+            try:
+                doctor = hit.to_dict()
+                doctor['encrypted_id'] = encrypt_laravel_style(str(doctor['id']))
+                doctors.append(doctor)
+            except Exception as e:
+                logger.error(f"Error processing doctor {hit.meta.id}: {str(e)}")
 
+        logger.info(f"Found {len(doctors)} doctors")
+        cache.set(cache_key, doctors, 300)
 
-        logger.info(f"Found {len(doctors)} doctors via Elasticsearch")
         if len(doctors) == 0:
-            # If no doctors found, log the raw response for debugging
             logger.warning(f"No doctors found. Raw Elasticsearch response: {response.to_dict()}")
 
-        # Fallback logic remains the same...
+            fallback_query = build_elasticsearch_query(
+                specialist_type=specialist_type,
+                country=None,
+                city=None,
+                language=language,
+                telehealth_required=telehealth_required,
+                patient_city=None,
+                patient_country=None
+            )
+
+            logger.debug(f"Retrying with fallback query: {json.dumps(fallback_query, indent=2)}")
+
+            response = search.query({"bool": fallback_query}) \
+                           .sort('_score', {'average_rating': {'order': 'desc'}})[:8].execute()
+
+            # Reprocess results
+            doctors = []
+            for hit in response:
+                try:
+                    doctor = hit.to_dict()
+                    doctor['encrypted_id'] = encrypt_laravel_style(str(doctor['id']))
+                    doctors.append(doctor)
+                except Exception as e:
+                    logger.error(f"Error processing fallback doctor {hit.meta.id}: {str(e)}")
+
+            logger.info(f"Found {len(doctors)} doctors on fallback attempt")
+            cache.set(cache_key, doctors, 300)
 
         return doctors
-
     except Exception as e:
-
-        logger.error(f"Search error: {str(e)}", exc_info=True)
-
+        logger.error(f"Search failed: {str(e)}", exc_info=True)
         return []
 
 
 def format_doctor_recommendations(doctors, is_urgent, telehealth_appropriate):
     """Format doctor recommendations into a user-friendly response"""
+
+    if not location_parts:
+        if patient_city and patient_country:
+            location_parts.append(f"Registered Location: {patient_city}, {patient_country}")
+        else:
+            location_parts.append("Location information not available")
     if not doctors:
         return "I couldn't find any specialists matching your criteria. You might want to contact your primary care physician for a referral."
 
@@ -684,14 +1061,14 @@ def format_doctor_recommendations(doctors, is_urgent, telehealth_appropriate):
     result = f"{urgent_message}Here are some recommended doctors that might help with your symptoms:\n\n"
 
     for i, doctor in enumerate(doctors, 1):
-        title = doctor.get('title', '').strip()  # Get title and remove extra spaces
+        title = doctor.get('title', '').strip()
         first_name = doctor.get('first_name', '').strip()
         last_name = doctor.get('last_name', '').strip()
 
         if title:
-            result += f"{i}. {title} {first_name} {last_name}\n"  # Show title if it exists
+            result += f"{i}. {title} {first_name} {last_name}\n"
         else:
-            result += f"{i}. {first_name} {last_name}\n"  # Show only name if no title
+            result += f"{i}. {first_name} {last_name}\n"
 
         if doctor.get('specialties'):
             if isinstance(doctor['specialties'], dict):
@@ -701,7 +1078,7 @@ def format_doctor_recommendations(doctors, is_urgent, telehealth_appropriate):
                 result += f"\n   Specialty: {doctor['specialties']}"
 
         # Language display fix
-        if doctor.get('languages'):  # Note plural field name
+        if doctor.get('languages'):
             if isinstance(doctor['languages'], list):
                 result += f"\n   Languages: {', '.join(doctor['languages'])}"
             else:
@@ -748,163 +1125,14 @@ def format_doctor_recommendations(doctors, is_urgent, telehealth_appropriate):
             result += f"\n   Website: {doctor['web_url']}"
 
 
+
+
         result += "\n\n"
     if telehealth_appropriate:
         result += telehealth_message
         result += "Some of these doctors offer telehealth consultations, which may be suitable for your initial assessment."
 
     return result
-
-
-@csrf_exempt
-def symptom_analysis(request):
-    """Endpoint to analyze symptoms without conversation context"""
-    if request.method != "POST":
-        return JsonResponse({"error": "Invalid request method."}, status=405)
-
-    try:
-        data = json.loads(request.body)
-        symptoms = data.get("symptoms", [])
-        country = data.get("country")
-        city = data.get("city")
-        patient_age = data.get("age")
-        language = data.get("language"),
-        patient_gender = data.get("gender")
-        medical_history = data.get("medical_history")
-
-        if not symptoms:
-            return JsonResponse({"error": "Please provide symptoms for analysis."}, status=400)
-
-        # Use LLM to analyze symptoms and suggest specialist
-        specialist_response = analyze_symptoms_with_llm(
-            symptoms,
-            patient_age,
-            patient_gender,
-            medical_history
-        )
-
-        # Find matching doctors with Elasticsearch
-        specialists = find_doctors_with_elasticsearch(
-            specialist_response["specialist_type"],
-            country=country,
-            city=city,
-            language=language,
-            telehealth_required=False
-        )
-
-        return JsonResponse({
-            "analysis": specialist_response,
-            "specialists": specialists[:3]  # Limit to 3 specialists
-        })
-
-    except json.JSONDecodeError:
-        return JsonResponse({"error": "Invalid JSON in request body."}, status=400)
-    except Exception as e:
-        logger.error(f"Error in symptom analysis: {str(e)}", exc_info=True)
-        return JsonResponse({"error": "An error occurred during symptom analysis."}, status=500)
-
-
-def analyze_symptoms_with_llm(symptoms, patient_age=None, patient_gender=None, medical_history=None):
-    """
-    Use LLM to analyze symptoms and recommend specialist type with improved error handling
-    """
-    # Convert symptoms list to text if it's a list
-    if isinstance(symptoms, list):
-        symptoms_text = ", ".join(symptoms)
-    else:
-        symptoms_text = symptoms
-
-    # Build context with available patient information
-    context = f"Symptoms: {symptoms_text}\n"
-    if patient_age:
-        context += f"Patient age: {patient_age}\n"
-    if patient_gender:
-        context += f"Patient gender: {patient_gender}\n"
-    if medical_history:
-        context += f"Medical history: {medical_history}\n"
-
-    prompt = f"""You are a medical specialist advisor for a Swiss healthcare website. 
-    Analyze the following patient information and determine the most appropriate medical specialist type:
-
-    {context}
-
-    Based on the available information, determine:
-    1. The most appropriate medical specialist type
-    2. The urgency level of the situation
-    3. Whether this could be handled by a general practitioner
-    4. If telehealth would be appropriate for an initial consultation
-
-    Provide a JSON response with the following format:
-    {{
-      "specialist_type": "the most appropriate specialist type",
-      "severity": "low/medium/high",
-      "urgent": true/false,
-      "gp_appropriate": true/false,
-      "telehealth_appropriate": true/false,
-      "explanation": "brief explanation of your recommendation",
-      "differential_specialties": ["other possible specialist types"]
-    }}
-
-    Only return the JSON object, nothing else.
-    """
-
-    # Retry mechanism
-    max_retries = 3
-    retry_count = 0
-
-    while retry_count < max_retries:
-        try:
-            completion = client.chat.completions.create(
-                model="deepseek/deepseek-chat:free",
-                temperature=0.2,
-                messages=[
-                    {"role": "system",
-                     "content": "You are a medical specialist advisor for a Swiss healthcare website."},
-                    {"role": "user", "content": prompt}
-                ]
-            )
-
-            response = completion.choices[0].message.content
-            logger.info(f"Symptom analysis raw response: {response}")
-
-            # Handle case when LLM wraps JSON in code block
-            if "```json" in response:
-                response = response.split("```json")[1].split("```")[0].strip()
-            elif "```" in response:
-                response = response.split("```")[1].split("```")[0].strip()
-
-            # Try to parse the JSON response
-            try:
-                result = json.loads(response)
-                return result
-            except json.JSONDecodeError:
-                # Fallback: if JSON parsing fails, return a default
-                logger.warning("Failed to parse JSON from symptom analysis, using default")
-                return create_default_specialist_response()
-
-            break
-        except Exception as e:
-            retry_count += 1
-            logger.warning(f"LLM API call failed (attempt {retry_count}/{max_retries}): {str(e)}")
-            if retry_count >= max_retries:
-                return create_default_specialist_response()
-            time.sleep(1)  # Wait before retrying
-
-    return create_default_specialist_response()
-
-
-def create_default_specialist_response():
-    """Create a default specialist response when API or parsing fails"""
-    return {
-        "specialist_type": None,
-        "severity": "medium",
-        "urgent": False,
-        "gp_appropriate": True,
-        "telehealth_appropriate": True,
-        "explanation": "Unable to determine specific specialist. Recommending general practitioner for initial assessment.",
-        "differential_specialties": ["Internal Medicine"]
-    }
-
 
 # Add new function to create Elasticsearch index
 @csrf_exempt
@@ -931,7 +1159,7 @@ def initialize_elasticsearch(request):
         total_count = users.count()
 
         # Optimized batch processing
-        batch_size = 200  # Reduced from 500
+        batch_size = 200
         retry_count = 0
         max_retries = 3
         success = False
@@ -965,7 +1193,7 @@ def initialize_elasticsearch(request):
                         logger.info(f"Indexed {min(i+batch_size, total_count)}/{total_count} doctors")
 
                         # Keep connection alive
-                        User.objects.first().pk  # Simple query to maintain connection
+                        User.objects.first().pk
 
                 success = True
 

@@ -57,6 +57,63 @@ class Expertise(models.Model):
     class Meta:
         db_table = 'expertises'
 
+class Patient(models.Model):
+    id = models.BigAutoField(primary_key=True)
+    first_name = models.CharField(max_length=255)
+    last_name = models.CharField(max_length=255, null=True, blank=True)
+    email = models.CharField(max_length=255, null=True, blank=True)
+    country = models.ForeignKey(
+        'Country',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        db_column='country'
+    )
+
+    city = models.ForeignKey(
+        'City',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        db_column='city'
+    )
+    languages = models.ManyToManyField(
+        'Language',
+        db_table='user_languages',
+        blank=True
+    )
+    address = models.CharField(max_length=255, null=True, blank=True)
+    postal_code = models.CharField(max_length=255, null=True, blank=True)
+    phone = models.CharField(max_length=255, null=True, blank=True)
+    birth_date = models.CharField(max_length=255, null=True, blank=True)
+    gender = models.CharField(max_length=255, null=True, blank=True)
+    profile_pic = models.CharField(max_length=255, null=True, blank=True)
+    about_me = models.CharField(max_length=255, null=True, blank=True)
+    insurance_name = models.CharField(max_length=255, null=True, blank=True)
+    insurance_number = models.CharField(max_length=255, null=True, blank=True)
+    extension_code = models.CharField(max_length=255, null=True, blank=True, unique=True)
+    created_at = models.DateTimeField(null=True, blank=True, default=timezone.now)
+    updated_at = models.DateTimeField(null=True, blank=True, auto_now=True)
+
+    def clean_country(self):
+        """Get normalized country name"""
+        if self.country:
+            return self.country.name.strip().lower()
+        return None
+
+    def clean_city(self):
+        """Get normalized city name"""
+        if self.city:
+            return self.city.name.strip().lower()
+        return None
+
+    class Meta:
+        db_table = 'patients'
+
+    def __str__(self):
+        return f"{self.first_name} {self.last_name}" if self.first_name else f"Patient {self.id}"
+
+
 class User(models.Model):
     # Enum for service type
     SERVICE_TYPE_CHOICES = [
@@ -235,7 +292,7 @@ class User(models.Model):
 
 
     class Meta:
-        db_table = 'users'  # Ensures the table name matches the original SQL schema
+        db_table = 'users'
         verbose_name = 'User'
         verbose_name_plural = 'Users'
 
@@ -248,7 +305,7 @@ class User(models.Model):
         """
         Override save method to set created_at and updated_at
         """
-        if not self.id:  # If this is a new object
+        if not self.id:
             self.created_at = timezone.now()
         self.updated_at = timezone.now()
         super().save(*args, **kwargs)

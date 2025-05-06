@@ -12,7 +12,6 @@ services:
     env_file:
       - .env
     environment:
-      - OPENROUTER_API_KEY=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
       - DJANGO_SETTINGS_MODULE=doctomed.settings
       - REDIS_HOST=redis
     depends_on:
@@ -57,7 +56,7 @@ services:
     container_name: mysql
     restart: always
     environment:
-      MYSQL_DATABASE: doctors
+      MYSQL_DATABASE: laravel
       MYSQL_ROOT_PASSWORD: 12345678
     volumes:
       - doctomed_mysql_data:/var/lib/mysql

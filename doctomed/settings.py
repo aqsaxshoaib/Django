@@ -23,6 +23,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 
 # SECURITY WARNING: keep the secret key used in production secret!
 SECRET_KEY = os.environ.get('SECRET_KEY')
+API_KEY_SECRET = os.environ.get('DJANGO_API_KEY')
 
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = False
@@ -45,6 +46,12 @@ INSTALLED_APPS = [
     'django_elasticsearch_dsl_drf',
 
 ]
+
+REST_FRAMEWORK = {
+    'DEFAULT_PERMISSION_CLASSES': [
+        'rest_framework_api_key.permissions.HasAPIKey',
+    ]
+}
 
 from django_elasticsearch_dsl.signals import RealTimeSignalProcessor
 
@@ -77,7 +84,7 @@ CACHES = {
 
 # CORS Settings
 CORS_ALLOW_ALL_ORIGINS = True  # For development only
-CORS_ALLOW_CREDENTIALS = True
+# CORS_ALLOW_CREDENTIALS = True
 # For production, use:
 # CORS_ALLOWED_ORIGINS = [
 #     "https://5376-154-192-156-75.ngrok-free.app",
