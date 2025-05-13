@@ -24,14 +24,11 @@ import logging
 import time
 import msgpack
 
-
-# Set up logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 load_dotenv()
 
-# Check for required environment variables
 INFOMANIAK_API_KEY = os.getenv("INFOMANIAK_API_KEY")
 
 if not INFOMANIAK_API_KEY:
@@ -59,7 +56,7 @@ Role & Compliance:
 
 Strict Location Handling Rules:
 1. If user asks about their location/city/country/address:
-   - IMMEDIATELY respond with: "Your registered location is {patient_city}, {patient_country}"
+   - respond with their registered location {patient_city}, {patient_country} only when asked about patients own location.
    - NEVER ask for location confirmation, When {patient_city}, {patient_country} are available
      
 Location Data Sources:
@@ -74,6 +71,7 @@ Strict Prohibitions:
 - NEVER provide medical diagnosis or possible causes
 - NEVER list medical tests or treatment options
 - NEVER explain symptoms or conditions
+- NEVER return JSON unless recommending a specialist_type
 - ALWAYS RETURN RESPONSES AS TEXT, NEVER USE NUMERIC CODES
 
 Structured Data Extraction (if given by user):
@@ -162,12 +160,11 @@ class ConversationManager:
             if not data:
                 return [], []
 
-            # First try msgpack
             try:
                 decoded = msgpack.unpackb(data, raw=False)
                 return decoded.get('dialogue', []), decoded.get('symptoms', [])
             except msgpack.exceptions.ExtraData:
-                # If msgpack fails, try JSON fallback
+
                 try:
                     decoded = json.loads(data)
                     return decoded.get('dialogue', []), decoded.get('symptoms', [])
@@ -201,8 +198,16 @@ class ConversationManager:
             patient_country = patient_location.get('country')
 
             if patient_city and patient_country:
-                system_content += f"\n\nPATIENT LOCATION LOCK: {patient_city}, {patient_country}"
-                logger.info(f"Added location lock during reset: {patient_city}, {patient_country}")
+                system_content = SYSTEM_PROMPT \
+                    .replace('{patient_city}', patient_city) \
+                    .replace('{patient_country}', patient_country)
+
+                logger.info(f"Initialized system prompt with location: {patient_city}, {patient_country}")
+            else:
+                system_content = SYSTEM_PROMPT.replace(
+                    "Location information is stored in your profile",
+                    "No location registered in your profile"
+                )
 
         except Exception as e:
             logger.error(f"Failed to add location during reset: {str(e)}", exc_info=True)
@@ -226,12 +231,10 @@ class ConversationManager:
         cache_key = f"reset_check:{hash(user_message.lower())}"
         logger.info(f"Checking if message requires reset: '{user_message}'")
 
-        # Check cache first
         if cached := cache.get(cache_key):
             return cached
 
         try:
-            # Get previous conversation context
             dialogue, _ = self.get_conversation(patient_id)
 
             context_messages = []
@@ -281,7 +284,6 @@ class ConversationManager:
             return False
 
 async def handle_message(user_message):
-    # Process message async
     loop = asyncio.get_event_loop()
     with concurrent.futures.ThreadPoolExecutor() as pool:
         return await loop.run_in_executor(
@@ -296,6 +298,8 @@ def chatbot(request):
     start_time = time.time()
     if request.method != "POST":
         return JsonResponse({"response": "Invalid request method."}, status=405)
+    logger.info(f"Request headers: {request.headers}")
+    logger.info(f"Request body: {request.body}")
 
     cm = ConversationManager()
     patient_id = None
@@ -305,7 +309,6 @@ def chatbot(request):
     clean_reply = None
     logger.info(f"Redis connection status: {cm.redis.ping()}")
 
-    # Unified patient ID handling
     try:
         if request.user.is_authenticated:
             patient_id = str(request.user.id)
@@ -396,7 +399,6 @@ def chatbot(request):
                     messages=dialogue,
                 )
 
-                # Get the bot's reply
                 bot_reply = completion.choices[0].message.content
                 logger.info(f"Raw bot reply: {bot_reply}")
                 break
@@ -410,7 +412,7 @@ def chatbot(request):
                 delay = base_delay * (2 ** retry_count) + random.uniform(0, 0.1)
                 time.sleep(delay)
 
-        json_data = extract_json_from_response(bot_reply, dialogue)
+        json_data = extract_json_from_response(bot_reply, dialogue, patient_id)
         logger.info(f"Extracted JSON data: {json_data}")
 
         clean_reply = remove_json_from_reply(bot_reply)
@@ -443,7 +445,6 @@ def chatbot(request):
             symptoms_provided = bool(symptoms)
 
             if symptoms:
-                # Update conversation with new symptoms using Redis manager
                 dialogue = cm.update_conversation(
                     patient_id=patient_id,
                     role="system",
@@ -466,71 +467,13 @@ def chatbot(request):
                 location_source = "database" if patient_location else "user input"
                 logger.info(f"Patient location - Valid: {bool(patient_city and patient_country)} City={patient_city or 'None'}, Country={patient_country or 'None'}")
 
-                placeholders = {
-                    '{database_city}': patient_city or '',
-                    '[database_city]': patient_city or '',
-                    '{database_country}': patient_country or '',
-                    '[database_country]': patient_country or ''
-                }
-
-                def replace_placeholders(obj):
-                    if isinstance(obj, dict):
-                        for key, value in obj.items():
-                            if isinstance(value, str):
-                                for ph, real in placeholders.items():
-                                    safe_real = str(real) if real is not None else ''
-                                    value = value.replace(ph, safe_real)
-                                obj[key] = value
-                            elif isinstance(value, (dict, list)):
-                                replace_placeholders(value)
-                    elif isinstance(obj, list):
-                        for i, item in enumerate(obj):
-                            if isinstance(item, str):
-                                for ph, real in placeholders.items():
-                                    safe_real = str(real) if real is not None else ''
-                                    item = item.replace(ph, safe_real)
-                                obj[i] = item
-                            elif isinstance(item, (dict, list)):
-                                replace_placeholders(item)
-
-                replace_placeholders(json_data)
-
-                # Handle city replacement
-                json_city = json_data.get('city', '')
-                if json_city in placeholders:
-                    json_data['city'] = placeholders[json_city]
-                elif not json_city:
-                    json_data['city'] = patient_city
-
-
-                # Handle country replacement
-                json_country = json_data.get('country', '')
-                if json_country in placeholders:
-                    json_data['country'] = placeholders[json_country]
-                elif not json_country:
-                    json_data['country'] = patient_country
-
-
-                if json_data.get('city') in ('[database_city]', '{database_city}') and patient_city:
-                    json_data['city'] = patient_city
-                    logger.info(f"Replaced city placeholder with: {patient_city}")
-
-                if json_data.get('country') in ('[database_country]', '{database_country}') and patient_country:
-                    json_data['country'] = patient_country
-                    logger.info(f"Replaced country placeholder with: {patient_country}")
-
-                if not json_data.get('city') in ('[database_city]', '{database_city}') and not patient_city:
-                    json_data['city'] = city
-                if not json_data.get('country') in ('[database_country]', '{database_country}') and not patient_country:
-                    json_data['country'] = country
-                # Replace the current 'near me' handling with:
                 if "near me" in user_message.lower():
                     json_data.update({
                         'city': patient_city,
                         'country': patient_country,
                         'use_db_location': True
                     })
-                    # Use database location instead of null
+
                     json_data['city'] = patient_city
                     json_data['country'] = patient_country
                     logger.info("Using database location for 'near me' request")
@@ -553,7 +496,6 @@ def chatbot(request):
                 search_country = json_data.get('country')
                 search_city = json_data.get('city')
 
-                # If no user-provided location parameters, first try patient location
                 if not user_provided_location:
                     logger.info("No user-provided location - using patient location for initial search")
                     search_country = patient_country
@@ -585,7 +527,6 @@ def chatbot(request):
                     logger.info(f"Found specialists in locationless search: {len(specialists) if specialists else 0}")
 
                 if not specialists:
-                    # Instead of using a default response, ask the LLM to generate a contextual response
                     no_specialists_prompt = (
                         f"We couldn't find any {original_specialist_type}s available on our website based on the user's criteria. "
                         f"Please provide a polite and very concise response that acknowledges this and maintains the conversation context. "
@@ -593,14 +534,11 @@ def chatbot(request):
                     )
 
                     try:
-                        # Create a new, minimal dialogue for this request instead of appending to existing dialogue
                         no_specialists_dialogue = [
                             {"role": "system", "content": SYSTEM_PROMPT},
                             {"role": "user", "content": user_message},
                             {"role": "system", "content": no_specialists_prompt}
                         ]
-
-                        # Add better logging before the API call
                         logger.info(
                             f"Attempting to generate no specialists response with dialogue: {no_specialists_dialogue}")
 
@@ -610,7 +548,6 @@ def chatbot(request):
                         )
 
                         clean_reply = no_specialists_completion.choices[0].message.content
-                        # Remove any JSON that might be in the response
                         clean_reply = remove_json_from_reply(clean_reply)
                         logger.info(f"Successfully generated no specialists response: {clean_reply}")
                     except Exception as e:
@@ -686,7 +623,7 @@ def remove_json_from_reply(bot_reply):
     return clean_reply
 
 
-def extract_json_from_response(response, dialogue_context):
+def extract_json_from_response(response, dialogue_context, patient_id):
     """More robust JSON extraction that handles incomplete responses"""
     try:
         if not response:
@@ -701,13 +638,9 @@ def extract_json_from_response(response, dialogue_context):
         is_specialist_search = any(pattern in response for pattern in specialist_search_patterns)
 
         # Search all messages for location lock
-        for msg in reversed(dialogue_context):
-            if msg['role'] == 'system':
-                match = re.search(r'PATIENT LOCATION LOCK:\s*(.+),\s*(.+)', msg['content'])
-                if match:
-                    default_city = match.group(1).strip()
-                    default_country = match.group(2).strip()
-                    break
+        patient_location = get_patient_location(patient_id) or {}
+        default_city = patient_location.get('city')
+        default_country = patient_location.get('country')
 
         json_data = {}
         if default_city and default_country:
@@ -749,7 +682,6 @@ def extract_json_from_response(response, dialogue_context):
                     "questioning_complete": True
                 }
 
-                # Final JSON parsing attempt
         if json_str:
             try:
                 parsed = json.loads(json_str)
@@ -920,7 +852,6 @@ def build_elasticsearch_query(specialist_type, country=None, city=None,
     # Language filter
     if language:
         clean_lang = language.strip().lower()
-        # Use the 'exact' subfield for language
         language_query = {
             "term": {"languages.exact": clean_lang}
         }
@@ -929,12 +860,10 @@ def build_elasticsearch_query(specialist_type, country=None, city=None,
 
     # Telehealth filter
     if telehealth_required is True:
-        # Hard filter: only show doctors offering telehealth
         bool_query["must"].append({
             "term": {"is_online": True}
         })
     else:
-        # Soft boost: prefer but don't require
         bool_query["should"].append({
             "term": {
                 "is_online": {
@@ -1041,11 +970,6 @@ def find_doctors_with_elasticsearch(specialist_type, country=None, city=None,
 def format_doctor_recommendations(doctors, is_urgent, telehealth_appropriate):
     """Format doctor recommendations into a user-friendly response"""
 
-    if not location_parts:
-        if patient_city and patient_country:
-            location_parts.append(f"Registered Location: {patient_city}, {patient_country}")
-        else:
-            location_parts.append("Location information not available")
     if not doctors:
         return "I couldn't find any specialists matching your criteria. You might want to contact your primary care physician for a referral."
 

@@ -87,7 +87,7 @@ CORS_ALLOW_ALL_ORIGINS = True  # For development only
 # CORS_ALLOW_CREDENTIALS = True
 # For production, use:
 # CORS_ALLOWED_ORIGINS = [
-#     "https://5376-154-192-156-75.ngrok-free.app",
+#     "https://zucchini-warmth-production.up.railway.app", "https://doctomed.ch"
 # ]
 CORS_ALLOW_METHODS = [
     "GET",

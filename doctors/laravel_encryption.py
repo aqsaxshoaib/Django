@@ -6,12 +6,12 @@ import os
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import pad
 
-#  ✅ Here you paste your Laravel APP_KEY (ONLY the part after base64:)
-APP_KEY_BASE64 = 'k7jHCfy8Ad+1Bb2/egJtOcDb/qEXd6mbR1FmtGdr0jg='  # <- YOUR key from Laravel .env
+
+APP_KEY_BASE64 = 'k7jHCfy8Ad+1Bb2/egJtOcDb/qEXd6mbR1FmtGdr0jg='
 APP_KEY = base64.b64decode(APP_KEY_BASE64)
 
 def encrypt_laravel_style(plain_text):
-    iv = os.urandom(16)  # Random 16-byte IV
+    iv = os.urandom(16)
     cipher = AES.new(APP_KEY, AES.MODE_CBC, iv)
     encrypted = cipher.encrypt(pad(plain_text.encode(), AES.block_size))
 
