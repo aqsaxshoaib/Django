@@ -400,7 +400,6 @@ def chatbot(request):
                 )
 
                 bot_reply = completion.choices[0].message.content
-                logger.info(f"Raw bot reply: {bot_reply}")
                 break
             except Exception as e:
                 retry_count += 1
@@ -412,21 +411,20 @@ def chatbot(request):
                 delay = base_delay * (2 ** retry_count) + random.uniform(0, 0.1)
                 time.sleep(delay)
 
-        json_data = extract_json_from_response(bot_reply, dialogue, patient_id)
-        logger.info(f"Extracted JSON data: {json_data}")
-
-        clean_reply = remove_json_from_reply(bot_reply)
-
-        if patient_city and patient_country:
-            clean_reply = clean_reply.replace('{patient_city}', patient_city) \
+        if patient_city and patient_country and bot_reply:
+            bot_reply = bot_reply.replace('{patient_city}', patient_city) \
                 .replace('{patient_country}', patient_country) \
                 .replace('{location}', f"{patient_city}, {patient_country}")
+
+        clean_reply = remove_json_from_reply(bot_reply) if bot_reply else ""
+        json_data = extract_json_from_response(bot_reply, dialogue, patient_id) if bot_reply else {}
+        logger.info(f"Raw bot reply: {bot_reply}")
+        logger.info(f"Extracted JSON data: {json_data}")
 
         final_response = clean_reply
         specialists = []
         symptoms_provided = False
 
-        # Ensure we always have a dictionary
         if not isinstance(json_data, dict):
             json_data = {}
 
@@ -881,9 +879,13 @@ def find_doctors_with_elasticsearch(specialist_type, country=None, city=None,
                                     language=None, telehealth_required=False,
                                     patient_city=None, patient_country=None):
     try:
-        # Determine final location values with fallback to patient's location
+
         final_city = city or patient_city
         final_country = country or patient_country
+        user_specified_location = city is not None or country is not None
+        if user_specified_location:
+            final_city = city
+            final_country = country
 
         cache_key = f"doctors:{specialist_type}:{country}:{city}:{language}:" \
                     f"{telehealth_required}:{patient_city}:{patient_country}"
@@ -893,11 +895,6 @@ def find_doctors_with_elasticsearch(specialist_type, country=None, city=None,
             logger.info(f"Cache hit for {cache_key}")
             return cached
 
-        logger.info(
-            f"Searching for {specialist_type} with: "
-            f"City={city} (User) → {patient_city} (DB) → Using: {final_city} | "
-            f"Country={country} (User) → {patient_country} (DB) → Using: {final_country}"
-        )
 
         search = UserDocument.search()
 
@@ -930,7 +927,7 @@ def find_doctors_with_elasticsearch(specialist_type, country=None, city=None,
         logger.info(f"Found {len(doctors)} doctors")
         cache.set(cache_key, doctors, 300)
 
-        if len(doctors) == 0:
+        if len(doctors) == 0 and not user_specified_location:
             logger.warning(f"No doctors found. Raw Elasticsearch response: {response.to_dict()}")
 
             fallback_query = build_elasticsearch_query(
