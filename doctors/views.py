@@ -94,7 +94,7 @@ Structured Data Extraction (if given by user):
 2. Symptom Analysis:
 - Only ask about symptoms if user describes health issues
 - Ask only ONE targeted question per response
-- After 2-3 questions, provide:
+- After 2-3 questions (when understood what to recommend in minimum questions directly recommend dont ask more question), provide:
 
 ```json
 {
@@ -298,8 +298,6 @@ def chatbot(request):
     start_time = time.time()
     if request.method != "POST":
         return JsonResponse({"response": "Invalid request method."}, status=405)
-    logger.info(f"Request headers: {request.headers}")
-    logger.info(f"Request body: {request.body}")
 
     cm = ConversationManager()
     patient_id = None
@@ -382,8 +380,6 @@ def chatbot(request):
             cm.save_conversation(patient_id, dialogue, symptoms)
 
         dialogue = cm.update_conversation(patient_id, "user", user_message)
-
-        logger.info(f"User message: {user_message}")
 
         max_retries = 2
         retry_count = 0
@@ -525,8 +521,6 @@ def chatbot(request):
                             {"role": "user", "content": user_message},
                             {"role": "system", "content": no_specialists_prompt}
                         ]
-                        logger.info(
-                            f"Attempting to generate no specialists response with dialogue: {no_specialists_dialogue}")
 
                         no_specialists_completion = client.chat.completions.create(
                             model="llama3",
@@ -728,9 +722,6 @@ def build_elasticsearch_query(specialist_type, country=None, city=None,
                               language=None, telehealth_required=False,
                               patient_city=None, patient_country=None):
     """Build Elasticsearch query with improved specialty matching"""
-
-    logger.info(f"Building query for {specialist_type} with fallback to patient location: "
-                f"Patient City={patient_city or 'None'}, Patient Country={patient_country or 'None'}")
 
     final_city = (city if city is not None else patient_city)
     final_country = (country if country is not None else patient_country)
