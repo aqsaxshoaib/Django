@@ -56,14 +56,15 @@ Role & Compliance:
 
 Strict Location Handling Rules:
 1. If user asks about their location/city/country/address:
-   - respond with their registered location {patient_city}, {patient_country} only when asked about patients own location.
+   - respond with their registered location {patient_city}, {patient_country} only when asked about their own location.
    - NEVER ask for location confirmation, When {patient_city}, {patient_country} are available
+   - Return the given city or country in json when specific "city" or "country" are mentioned by user 
      
 Location Data Sources:
    - Always use patient_city from: {patient_city}
    - Always use patient_country from: {patient_country}
+   = Never ask for city if mentions by user. just use the given location , dont talk about the registered location.
    
-
 3. If no location exists:
    - Respond: "No location registered. Please update your profile first." 
 
@@ -83,12 +84,11 @@ Structured Data Extraction (if given by user):
   "city": "string or null",
   "country": "string or null",
   "language": "string or null",
-  "telehealth_appropriate": true/false,
+  "telehealth_appropriate": true/false/null,
   "urgent": true/false,
   "questioning_complete": true
 }
 - Always return questioning_complete true for Direct Requests.
-- if country, city and telehealth_appropriate isnt mention just keep it null and false, dont ask questions for it.
 - Maintain conversation context
 
 2. Symptom Analysis:
@@ -104,13 +104,13 @@ Structured Data Extraction (if given by user):
   "language": "string or null",
   "specialist_type": "most appropriate specialist type",
   "gp_appropriate": true/false,
-  "telehealth_appropriate": true/false,
+  "telehealth_appropriate": true/false/null,
   "urgent": true/false,
   "questioning_complete": true/false
 }
-```
+``` 
 NOTE:
-- ONLY return 'telehealth_appropriate': True, when user asks for it.
+- If telehealth_appropriate isn't mentioned, keep it as null. Don't ask questions for it in both cases.
 - MUST mention country if only city is given in both cases of JSON either Direct Requests or Symptom Analysis
 - IMPORTANT: Always include the JSON block (not in number form) at the end when recommending a specialist. Example response:
 - Here are the best {specialist_type}s recommended for you:\n\n"
@@ -255,7 +255,7 @@ class ConversationManager:
                     Return YES ONLY if:
                     1. The user start talking about something completely different. 
                     2. The user suddenly introduces a topic unrelated to the previous conversation (e.g., a new condition, different body system, different specialist).
-                    3. When user say greetings 
+                    3. When user say greetings or metions country or city name by itself.
 
                     Return NO if:
                     1. The message is a follow-up to a previous question
@@ -344,10 +344,6 @@ def chatbot(request):
         else:
             dialogue, symptoms = cm.get_conversation(patient_id)
 
-        country = data.get("country")
-        city = data.get("city")
-        user_lat = data.get("latitude")
-        user_lng = data.get("longitude")
         preferred_language = data.get("language")
         telehealth_preference = data.get("telehealth_appropriate", False)
         try:
@@ -459,8 +455,9 @@ def chatbot(request):
 
                 logger.info(f"Searching for specialist type: {specialist_type}")
 
-                country = json_data.get('country')
-                city = json_data.get('city')
+                country = json_data.get('country') or patient_country
+                city = json_data.get('city') or patient_city
+                user_provided_location = (json_data.get('city') is not None) or (json_data.get('country') is not None)
 
                 location_source = "database" if patient_location else "user input"
                 logger.info(f"Patient location - Valid: {bool(patient_city and patient_country)} City={patient_city or 'None'}, Country={patient_country or 'None'}")
@@ -488,21 +485,12 @@ def chatbot(request):
                                 f"Type={specialist_type}, City={city}, Country={country}, "
                                 f"Telehealth={telehealth_required}")
 
-                user_provided_location = (json_data.get('city') is not None) or (json_data.get('country') is not None)
 
-                # First search parameters
-                search_country = json_data.get('country')
-                search_city = json_data.get('city')
-
-                if not user_provided_location:
-                    logger.info("No user-provided location - using patient location for initial search")
-                    search_country = patient_country
-                    search_city = patient_city
                 # Find doctors
                 specialists = find_doctors_with_elasticsearch(
                     specialist_type=json_data.get('specialist_type'),
-                    country=search_country,
-                    city=search_city,
+                    country=country,
+                    city=city,
                     language=json_data.get('language'),
                     telehealth_required=json_data.get('telehealth_appropriate', False),
                     patient_city=patient_city,
@@ -641,9 +629,6 @@ def extract_json_from_response(response, dialogue_context, patient_id):
         default_country = patient_location.get('country')
 
         json_data = {}
-        if default_city and default_country:
-            json_data.setdefault('city', default_city)
-            json_data.setdefault('country', default_country)
 
         try:
             parsed_json = json.loads(response)
@@ -652,7 +637,7 @@ def extract_json_from_response(response, dialogue_context, patient_id):
         except JSONDecodeError:
             pass
 
-            # Try to find JSON in code blocks
+        # Try to find JSON in code blocks
         json_str = None
         if "```json" in response:
             json_str = response.split("```json")[1].split("```")[0].strip()
@@ -804,7 +789,7 @@ def build_elasticsearch_query(specialist_type, country=None, city=None,
         bool_query["must"].append(specialty_query)
 
 
-        # Country filter
+    # Country filter
     if final_country:
         bool_query["must"].append({
             "nested": {
@@ -880,12 +865,10 @@ def find_doctors_with_elasticsearch(specialist_type, country=None, city=None,
                                     patient_city=None, patient_country=None):
     try:
 
-        final_city = city or patient_city
-        final_country = country or patient_country
-        user_specified_location = city is not None or country is not None
-        if user_specified_location:
-            final_city = city
-            final_country = country
+        user_specified_location = (
+                (city is not None and (patient_city is None or city.lower() != patient_city.lower())) or
+                (country is not None and (patient_country is None or country.lower() != patient_country.lower()))
+        )
 
         cache_key = f"doctors:{specialist_type}:{country}:{city}:{language}:" \
                     f"{telehealth_required}:{patient_city}:{patient_country}"
@@ -900,8 +883,8 @@ def find_doctors_with_elasticsearch(specialist_type, country=None, city=None,
 
         bool_query = build_elasticsearch_query(
             specialist_type=specialist_type,
-            country=final_country,
-            city=final_city,
+            country=country or patient_country,
+            city=city or patient_city,
             language=language,
             telehealth_required=telehealth_required,
             patient_city= patient_city,
