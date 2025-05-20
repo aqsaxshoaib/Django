@@ -245,7 +245,7 @@ class ConversationManager:
             context_text = "\n".join(context_messages) if context_messages else "No previous conversation"
 
             response = client.chat.completions.create(
-                model="llama3",
+                model="mistral24b",
                 messages=[{
                     "role": "system",
                     "content": """Analyze if the user's message indicates a desire to start a completely new conversation.
@@ -387,7 +387,7 @@ def chatbot(request):
         while retry_count < max_retries:
             try:
                 completion = client.chat.completions.create(
-                    model="llama3",
+                    model="mistral24b",
                     messages=dialogue,
                 )
 
@@ -523,7 +523,7 @@ def chatbot(request):
                         ]
 
                         no_specialists_completion = client.chat.completions.create(
-                            model="llama3",
+                            model="mistral24b",
                             messages=no_specialists_dialogue
                         )
 
